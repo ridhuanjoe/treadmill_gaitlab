@@ -1,10 +1,7 @@
 // Treadmill Gait Lab (Browser-only)
-// Implements:
-// 1) Stable timing (upload uses requestVideoFrameCallback timestamps; live uses performance.now)
-// 2) Ground line + crosshair + ground calibration button
-// 3) Analyze workflow: 10s warm-up -> 5s countdown -> analyze 10 steps (camera stays on)
-// 4) Tooltips are in index.html (no JS needed)
-// 5) Step length fallback (so it won't be empty in upload mode)
+// Stable live + upload processing, ground line, analyze workflow, 10-step capture
+// Upload mode robustness fix: wait for metadata + playing; enable controls during upload;
+// fallback loops if requestVideoFrameCallback is unavailable.
 
 const POSE_VERSION = "0.5.1675469404";
 
@@ -41,7 +38,7 @@ const hudEl = document.getElementById("hud");
 
 let pose = null;
 
-// Mode/state
+// State
 let streamOn = false;
 let runningLoop = false;
 let usingUpload = false;
@@ -50,10 +47,9 @@ let analyzeState = "idle"; // idle | warmup | countdown | analyzing
 let stream = null;
 let uploadedUrl = null;
 
-// Frame/time handling
+// Time
 let rafId = null;
 let lastFrameTimeMs = null;
-let lastLandmarks = null;
 
 // Ground line
 let groundY = null;
@@ -69,7 +65,6 @@ const footState = {
   R: { yHist: [], ySmHist: [], tLastStrike: null, lastMaxTime: null },
   L: { yHist: [], ySmHist: [], tLastStrike: null, lastMaxTime: null },
 };
-
 let lastAnyStrike = null; // {side, tMs}
 let stepCount = 0;
 
@@ -79,27 +74,27 @@ let totalFrames = 0;
 
 // MediaPipe landmark indices
 const IDX = {
-  L_SHOULDER: 11,
-  R_SHOULDER: 12,
-  L_HIP: 23,
-  R_HIP: 24,
-  L_KNEE: 25,
-  R_KNEE: 26,
-  L_ANKLE: 27,
-  R_ANKLE: 28,
-  L_HEEL: 29,
-  R_HEEL: 30,
-  L_FOOT: 31,
-  R_FOOT: 32,
+  L_SHOULDER: 11, R_SHOULDER: 12,
+  L_HIP: 23, R_HIP: 24,
+  L_KNEE: 25, R_KNEE: 26,
+  L_ANKLE: 27, R_ANKLE: 28,
+  L_HEEL: 29, R_HEEL: 30,
+  L_FOOT: 31, R_FOOT: 32,
 };
 
-// ---------------- Utilities ----------------
-function setStatus(msg) {
-  statusEl.textContent = `Status: ${msg}`;
-}
+// ---------- UI helpers ----------
+function setStatus(msg) { statusEl.textContent = `Status: ${msg}`; }
+function setHUD(msg) { hudEl.textContent = msg || ""; }
 
-function setHUD(msg) {
-  hudEl.textContent = msg || "";
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+function fmt(x, digits = 3) {
+  if (x === null || x === undefined || !isFinite(x)) return "";
+  return Number(x).toFixed(digits);
+}
+function fmtInt(x) {
+  if (x === null || x === undefined || !isFinite(x)) return "";
+  return Math.round(x).toString();
 }
 
 function getSpeedMS() {
@@ -109,22 +104,8 @@ function getSpeedMS() {
   return unit === "kmh" ? (v / 3.6) : v;
 }
 
-function fmt(x, digits = 3) {
-  if (x === null || x === undefined || !isFinite(x)) return "";
-  return Number(x).toFixed(digits);
-}
-
-function fmtInt(x) {
-  if (x === null || x === undefined || !isFinite(x)) return "";
-  return Math.round(x).toString();
-}
-
-function clamp(v, lo, hi) {
-  return Math.max(lo, Math.min(hi, v));
-}
-
 function movingAverage(arr, n) {
-  if (arr.length === 0) return null;
+  if (!arr.length) return null;
   const k = Math.min(n, arr.length);
   let s = 0;
   for (let i = arr.length - k; i < arr.length; i++) s += arr[i];
@@ -151,6 +132,56 @@ function setStatusQuality() {
   else qualityEl.textContent = "—";
 }
 
+// ---------- Tooling: wait helpers (fix upload playback) ----------
+function waitForEvent(target, eventName, timeoutMs = 4000) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timeout waiting for ${eventName}`));
+    }, timeoutMs);
+
+    const onEvent = () => {
+      cleanup();
+      resolve();
+    };
+
+    function cleanup() {
+      clearTimeout(t);
+      target.removeEventListener(eventName, onEvent);
+    }
+
+    target.addEventListener(eventName, onEvent, { once: true });
+  });
+}
+
+async function ensureVideoReadyAndPlaying() {
+  // loadedmetadata => dimensions/time known
+  if (videoEl.readyState < 1) {
+    await waitForEvent(videoEl, "loadedmetadata", 6000);
+  }
+  // loadeddata => frame available
+  if (videoEl.readyState < 2) {
+    await waitForEvent(videoEl, "loadeddata", 6000);
+  }
+
+  // Try play; some browsers may reject play() but user gesture usually allows it
+  try {
+    await videoEl.play();
+  } catch (e) {
+    // We'll handle below with a "tap play" message
+  }
+
+  // Wait for playing/paused state
+  if (videoEl.paused) {
+    // If still paused, tell user to tap play (controls are enabled in upload mode)
+    throw new Error("Video is paused. Tap Play on the video controls, then press Process again.");
+  }
+
+  // Wait for "playing" event to ensure time advances
+  await waitForEvent(videoEl, "playing", 4000);
+}
+
+// ---------- Facing detection ----------
 function estimateFacingDirection(landmarks) {
   const leftIdx = [IDX.L_SHOULDER, IDX.L_HIP, IDX.L_KNEE, IDX.L_ANKLE, IDX.L_HEEL, IDX.L_FOOT];
   const rightIdx = [IDX.R_SHOULDER, IDX.R_HIP, IDX.R_KNEE, IDX.R_ANKLE, IDX.R_HEEL, IDX.R_FOOT];
@@ -171,38 +202,21 @@ function percentile(arr, p) {
   return a[idx];
 }
 
-// ---------------- Table + Export ----------------
+// ---------- Table + Export ----------
 function addRowToTable(rowObj) {
   rows.push(rowObj);
 
   const tr = document.createElement("tr");
+  const td1 = document.createElement("td"); td1.textContent = rowObj.stepLabel;
+  const td2 = document.createElement("td"); td2.textContent = fmtInt(rowObj.stepTimeMs);
+  const td3 = document.createElement("td"); td3.textContent = fmt(rowObj.stepLenM, 3);
+  const td4 = document.createElement("td"); td4.textContent = fmtInt(rowObj.strideTimeMs);
+  const td5 = document.createElement("td"); td5.textContent = fmt(rowObj.strideLenM, 3);
+  const td6 = document.createElement("td"); td6.textContent = fmt(rowObj.strideFreqHz, 3);
 
-  const tdStep = document.createElement("td");
-  tdStep.textContent = rowObj.stepLabel;
-
-  const tdStepTime = document.createElement("td");
-  tdStepTime.textContent = fmtInt(rowObj.stepTimeMs);
-
-  const tdStepLen = document.createElement("td");
-  tdStepLen.textContent = fmt(rowObj.stepLenM, 3);
-
-  const tdStrideTime = document.createElement("td");
-  tdStrideTime.textContent = fmtInt(rowObj.strideTimeMs);
-
-  const tdStrideLen = document.createElement("td");
-  tdStrideLen.textContent = fmt(rowObj.strideLenM, 3);
-
-  const tdStrideFreq = document.createElement("td");
-  tdStrideFreq.textContent = fmt(rowObj.strideFreqHz, 3);
-
-  tr.appendChild(tdStep);
-  tr.appendChild(tdStepTime);
-  tr.appendChild(tdStepLen);
-  tr.appendChild(tdStrideTime);
-  tr.appendChild(tdStrideLen);
-  tr.appendChild(tdStrideFreq);
-
+  tr.append(td1, td2, td3, td4, td5, td6);
   tbody.appendChild(tr);
+
   downloadBtn.disabled = rows.length === 0;
 }
 
@@ -213,19 +227,9 @@ function resetTable() {
 }
 
 function downloadCSV() {
-  if (rows.length === 0) return;
-
-  const header = [
-    "Step",
-    "Step Time (ms)",
-    "Step Length (m)",
-    "Stride Time (ms)",
-    "Stride Length (m)",
-    "Stride Frequency (Hz)"
-  ];
-
+  if (!rows.length) return;
+  const header = ["Step","Step Time (ms)","Step Length (m)","Stride Time (ms)","Stride Length (m)","Stride Frequency (Hz)"];
   const lines = [header.join(",")];
-
   for (const r of rows) {
     lines.push([
       `"${r.stepLabel}"`,
@@ -236,7 +240,6 @@ function downloadCSV() {
       r.strideFreqHz ?? ""
     ].join(","));
   }
-
   const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -244,12 +247,11 @@ function downloadCSV() {
   a.click();
 }
 
-// ---------------- Ground overlay ----------------
+// ---------- Ground overlay ----------
 function drawGroundOverlay() {
   if (groundY === null) return;
 
   ctx.save();
-
   ctx.globalAlpha = 0.9;
   ctx.lineWidth = 3;
   ctx.strokeStyle = "rgba(232,236,255,0.85)";
@@ -276,13 +278,11 @@ function drawGroundOverlay() {
   ctx.fillStyle = "rgba(232,236,255,0.9)";
   ctx.font = "16px system-ui, -apple-system, Segoe UI, Roboto, Arial";
   ctx.fillText(groundCalibrated ? "Ground (calibrated)" : "Ground (estimated)", 12, Math.max(22, groundY - 10));
-
   ctx.restore();
 }
 
 function updateEstimatedGroundFromLandmarks(landmarks, visThresh) {
   if (groundCalibrated) return;
-
   const lh = landmarks[IDX.L_HEEL];
   const rh = landmarks[IDX.R_HEEL];
   const goodL = lh && (lh.visibility ?? 0) >= visThresh;
@@ -297,7 +297,7 @@ function updateEstimatedGroundFromLandmarks(landmarks, visThresh) {
   else groundY = 0.9 * groundY + 0.1 * y;
 }
 
-// ---------------- Strike Detection ----------------
+// ---------- Strike detection ----------
 function getFootY(landmarks, side, visThresh) {
   const aIdx = side === "R" ? IDX.R_ANKLE : IDX.L_ANKLE;
   const hIdx = side === "R" ? IDX.R_HEEL : IDX.L_HEEL;
@@ -372,25 +372,19 @@ function registerStrike(side, tMs) {
 
   // step (alternating) + fallback (stride/2)
   let stepTimeMs = null, stepLenM = null;
-
   if (lastAnyStrike !== null && lastAnyStrike.side !== side) {
     stepTimeMs = tMs - lastAnyStrike.tMs;
     const stepTimeSec = stepTimeMs / 1000.0;
     if (stepTimeSec > 0) stepLenM = vMS * stepTimeSec;
-  } else {
-    // fallback: step ≈ stride/2 for steady treadmill running
-    if (strideTimeMs !== null && strideTimeMs > 0) {
-      stepTimeMs = strideTimeMs / 2;
-      const stepTimeSec = stepTimeMs / 1000.0;
-      stepLenM = vMS * stepTimeSec;
-    }
+  } else if (strideTimeMs !== null && strideTimeMs > 0) {
+    stepTimeMs = strideTimeMs / 2;
+    stepLenM = vMS * (stepTimeMs / 1000.0);
   }
 
   lastAnyStrike = { side, tMs };
 
   stepCount += 1;
   const label = `${stepCount} – ${side === "R" ? "Right" : "Left"}`;
-
   addRowToTable({ stepLabel: label, stepTimeMs, stepLenM, strideTimeMs, strideLenM, strideFreqHz });
 
   lastSideEl.textContent = side === "R" ? "Right" : "Left";
@@ -407,10 +401,9 @@ function registerStrike(side, tMs) {
   }
 }
 
-// ---------------- Drawing ----------------
+// ---------- Drawing ----------
 function drawResults(results) {
   updateCanvasSize();
-
   ctx.save();
   ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
   ctx.drawImage(results.image, 0, 0, canvasEl.width, canvasEl.height);
@@ -424,15 +417,13 @@ function drawResults(results) {
   ctx.restore();
 }
 
-// ---------------- Pose callback ----------------
+// ---------- Pose callback ----------
 async function onPoseResults(results) {
   if (!runningLoop) return;
 
   totalFrames += 1;
 
   if (results.poseLandmarks && results.poseLandmarks.length > 0) {
-    lastLandmarks = results.poseLandmarks;
-
     const visThresh = clamp(Number(visThreshInput.value || 0.55), 0, 1);
     const minStrikeMs = Math.max(120, Number(minStrikeMsInput.value || 300));
     const smoothN = Math.max(1, Math.min(15, Number(smoothNInput.value || 5)));
@@ -476,7 +467,7 @@ async function onPoseResults(results) {
   }
 }
 
-// ---------------- MediaPipe Pose init ----------------
+// ---------- Init Pose ----------
 async function initPose() {
   if (pose) return;
 
@@ -495,7 +486,7 @@ async function initPose() {
   pose.onResults(onPoseResults);
 }
 
-// ---------------- Ground calibration ----------------
+// ---------- Ground calibration ----------
 async function calibrateGroundLine() {
   if (!streamOn || !runningLoop) {
     setStatus("Start Live Camera first, then set ground line.");
@@ -517,42 +508,12 @@ async function calibrateGroundLine() {
     return;
   }
 
-  const gy = percentile(groundSamples, 90);
-  groundY = gy;
+  groundY = percentile(groundSamples, 90);
   groundCalibrated = true;
-
   setStatus("Ground line set (calibrated).");
 }
 
-// ---------------- Analyze workflow (live) ----------------
-async function runAnalyzeWorkflow() {
-  if (!streamOn || !runningLoop) {
-    setStatus("Start Live Camera first, then press Analyze.");
-    return;
-  }
-
-  analyzeBtn.disabled = true;
-  setGroundBtn.disabled = true;
-  processUploadBtn.disabled = true;
-
-  analyzeState = "warmup";
-  setStatus("Warm-up: run naturally (10 seconds).");
-  await sleepWithCountdownHUD(10, "WARM-UP");
-
-  analyzeState = "countdown";
-  setStatus("Get ready… analysis begins soon.");
-  for (let i = 5; i >= 1; i--) {
-    setHUD(`ANALYZE IN ${i}`);
-    await new Promise((r) => setTimeout(r, 1000));
-  }
-  setHUD("");
-
-  resetAnalysisMetricsOnly();
-  analyzeState = "analyzing";
-  setStatus("Analyzing… capturing 10 steps.");
-  setHUD("ANALYZING…");
-}
-
+// ---------- Analyze workflow (live) ----------
 async function sleepWithCountdownHUD(seconds, label) {
   for (let s = seconds; s >= 1; s--) {
     setHUD(`${label} ${s}s`);
@@ -591,7 +552,35 @@ function stopAnalysisOnly() {
   processUploadBtn.disabled = (videoFileInput.files.length === 0);
 }
 
-// ---------------- Live camera loop ----------------
+async function runAnalyzeWorkflow() {
+  if (!streamOn || !runningLoop) {
+    setStatus("Start Live Camera first, then press Analyze.");
+    return;
+  }
+
+  analyzeBtn.disabled = true;
+  setGroundBtn.disabled = true;
+  processUploadBtn.disabled = true;
+
+  analyzeState = "warmup";
+  setStatus("Warm-up: run naturally (10 seconds).");
+  await sleepWithCountdownHUD(10, "WARM-UP");
+
+  analyzeState = "countdown";
+  setStatus("Get ready… analysis begins soon.");
+  for (let i = 5; i >= 1; i--) {
+    setHUD(`ANALYZE IN ${i}`);
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  setHUD("");
+
+  resetAnalysisMetricsOnly();
+  analyzeState = "analyzing";
+  setStatus("Analyzing… capturing 10 steps.");
+  setHUD("ANALYZING…");
+}
+
+// ---------- Live loop ----------
 async function loopLiveFrames() {
   if (!runningLoop) return;
 
@@ -608,13 +597,40 @@ async function loopLiveFrames() {
   rafId = requestAnimationFrame(loopLiveFrames);
 }
 
-// ---------------- Upload processing loop ----------------
-function startUploadFrameLoop() {
+// ---------- Upload loop (robust) ----------
+function startUploadProcessingLoop() {
   const hasRVFC = typeof videoEl.requestVideoFrameCallback === "function";
 
+  if (hasRVFC) {
+    const tickRVFC = async (_now, metadata) => {
+      if (!runningLoop) return;
+      if (videoEl.ended) {
+        setStatus("Upload finished.");
+        stopAll(true);
+        return;
+      }
+
+      lastFrameTimeMs = metadata.mediaTime * 1000;
+
+      try {
+        await pose.send({ image: videoEl });
+      } catch (e) {
+        console.error(e);
+        setStatus(`Pose error: ${e?.message || e}`);
+        stopAll(true);
+        return;
+      }
+
+      videoEl.requestVideoFrameCallback(tickRVFC);
+    };
+
+    videoEl.requestVideoFrameCallback(tickRVFC);
+    return;
+  }
+
+  // Fallback: RAF loop
   const tickRAF = async () => {
     if (!runningLoop) return;
-
     if (videoEl.ended) {
       setStatus("Upload finished.");
       stopAll(true);
@@ -635,42 +651,13 @@ function startUploadFrameLoop() {
     rafId = requestAnimationFrame(tickRAF);
   };
 
-  if (!hasRVFC) {
-    rafId = requestAnimationFrame(tickRAF);
-    return;
-  }
-
-  const tickRVFC = async (_now, metadata) => {
-    if (!runningLoop) return;
-
-    if (videoEl.ended) {
-      setStatus("Upload finished.");
-      stopAll(true);
-      return;
-    }
-
-    lastFrameTimeMs = metadata.mediaTime * 1000;
-
-    try {
-      await pose.send({ image: videoEl });
-    } catch (e) {
-      console.error(e);
-      setStatus(`Pose error: ${e?.message || e}`);
-      stopAll(true);
-      return;
-    }
-
-    videoEl.requestVideoFrameCallback(tickRVFC);
-  };
-
-  videoEl.requestVideoFrameCallback(tickRVFC);
+  rafId = requestAnimationFrame(tickRAF);
 }
 
-// ---------------- Stop / Reset / Export ----------------
+// ---------- Stop/Reset ----------
 function stopAll(setStoppedStatus = true) {
   analyzeState = "idle";
   usingUpload = false;
-
   runningLoop = false;
   streamOn = false;
 
@@ -697,6 +684,9 @@ function stopAll(setStoppedStatus = true) {
     uploadedUrl = null;
   }
 
+  // Return to normal video presentation
+  videoEl.controls = false;
+
   setHUD("");
   if (setStoppedStatus) setStatus("Stopped");
 }
@@ -706,8 +696,6 @@ function resetAllState() {
   groundCalibrated = false;
   groundCalibrating = false;
   groundSamples = [];
-
-  lastLandmarks = null;
 
   goodFrames = 0;
   totalFrames = 0;
@@ -720,8 +708,8 @@ function resetAllState() {
   setHUD("");
 }
 
-// ---------------- Events ----------------
-downloadBtn.addEventListener("click", () => downloadCSV());
+// ---------- Events ----------
+downloadBtn.addEventListener("click", downloadCSV);
 
 resetBtn.addEventListener("click", () => {
   resetAllState();
@@ -734,16 +722,14 @@ videoFileInput.addEventListener("change", () => {
   processUploadBtn.disabled = (videoFileInput.files.length === 0);
 });
 
-setGroundBtn.addEventListener("click", async () => {
-  await calibrateGroundLine();
-});
+setGroundBtn.addEventListener("click", calibrateGroundLine);
 
 analyzeBtn.addEventListener("click", async () => {
   if (analyzeState !== "idle") return;
   await runAnalyzeWorkflow();
 });
 
-// ---------------- Start Live Camera ----------------
+// ---------- Start Live Camera ----------
 startCamBtn.addEventListener("click", async () => {
   try {
     await initPose();
@@ -757,6 +743,7 @@ startCamBtn.addEventListener("click", async () => {
       uploadedUrl = null;
     }
 
+    videoEl.controls = false;
     videoEl.srcObject = null;
     videoEl.src = "";
     videoEl.muted = true;
@@ -799,7 +786,7 @@ startCamBtn.addEventListener("click", async () => {
   }
 });
 
-// ---------------- Process Uploaded Video ----------------
+// ---------- Process Uploaded Video (ROBUST) ----------
 processUploadBtn.addEventListener("click", async () => {
   try {
     await initPose();
@@ -814,27 +801,43 @@ processUploadBtn.addEventListener("click", async () => {
     usingUpload = true;
     analyzeState = "idle";
 
+    // Stop camera if any
     if (stream) {
       stream.getTracks().forEach(t => t.stop());
       stream = null;
     }
 
+    // Load upload
     if (uploadedUrl) URL.revokeObjectURL(uploadedUrl);
     uploadedUrl = URL.createObjectURL(file);
 
     videoEl.srcObject = null;
     videoEl.src = uploadedUrl;
+
+    // IMPORTANT for upload: show controls so user can tap play if autoplay is blocked
+    videoEl.controls = true;
     videoEl.muted = true;
     videoEl.playsInline = true;
+    videoEl.currentTime = 0;
 
     setStatus("Loading uploaded video…");
-    await videoEl.play();
 
+    // UI
     startCamBtn.disabled = true;
     stopBtn.disabled = false;
-
     setGroundBtn.disabled = true;
     analyzeBtn.disabled = true;
+
+    // Ensure it is actually playing before starting analysis
+    try {
+      await ensureVideoReadyAndPlaying();
+    } catch (e) {
+      setStatus(e.message || "Upload playback did not start. Tap Play and try again.");
+      // Keep controls visible so user can hit play
+      usingUpload = false;
+      startCamBtn.disabled = false;
+      return;
+    }
 
     setStatus("Processing upload… capturing 10 steps.");
     setHUD("UPLOADED VIDEO");
@@ -842,7 +845,7 @@ processUploadBtn.addEventListener("click", async () => {
     runningLoop = true;
     streamOn = false;
 
-    startUploadFrameLoop();
+    startUploadProcessingLoop();
 
   } catch (e) {
     console.error(e);
@@ -851,10 +854,9 @@ processUploadBtn.addEventListener("click", async () => {
   }
 });
 
-// ---------------- Initial UI ----------------
+// ---------- Initial ----------
 function initUI() {
   resetAllState();
-
   startCamBtn.disabled = false;
   stopBtn.disabled = true;
 
@@ -864,6 +866,7 @@ function initUI() {
   processUploadBtn.disabled = true;
   downloadBtn.disabled = true;
 
+  videoEl.controls = false;
   setStatus("Ready (open via GitHub Pages HTTPS link)");
 }
 
