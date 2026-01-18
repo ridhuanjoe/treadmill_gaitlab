@@ -6,7 +6,7 @@
   <title>Treadmill Gait Lab (Step/Stride)</title>
   <link rel="stylesheet" href="style.css" />
 
-  <!-- Pinned MediaPipe versions (stable with locateFile in app.js) -->
+  <!-- Pinned MediaPipe versions -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/pose.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1675466124/drawing_utils.js"></script>
@@ -46,8 +46,8 @@
           <span class="tipwrap" tabindex="0">
             <span class="tipicon">?</span>
             <span class="tiptext">
-              Anti double-count filter. After a strike is detected for the SAME foot (e.g., Right), the app ignores any additional Right strikes for this many milliseconds.
-              Typical default: 300 ms (try 220–400).
+              Anti double-count filter. After a strike is detected for the SAME foot, extra same-foot strikes are ignored for this many ms.
+              Typical: 300 (try 220–400).
             </span>
           </span>
         </label>
@@ -76,7 +76,7 @@
           <span class="tipwrap" tabindex="0">
             <span class="tipicon">?</span>
             <span class="tiptext">
-              MediaPipe gives each joint a confidence (“visibility”). Points below this are ignored.
+              MediaPipe confidence for each joint. Points below this are ignored.
               Raise for cleaner data; lower if feet are sometimes blocked. Typical: 0.55.
             </span>
           </span>
@@ -117,7 +117,7 @@
           <span class="tipwrap" tabindex="0">
             <span class="tipicon">?</span>
             <span class="tiptext">
-              Use a side-view treadmill clip (10–20 seconds). MP4 works best. Processing will capture 10 steps automatically.
+              Use a side-view treadmill clip (10–20 seconds). MP4 works best. If autoplay is blocked, tap the big “Play” overlay.
             </span>
           </span>
         </label>
@@ -158,14 +158,26 @@
       </p>
     </section>
 
-    <!-- BIGGER Live View (full width) -->
+    <!-- BIG Live View -->
     <section class="card wide live">
       <h2>Live View</h2>
+
       <div class="videoWrap">
         <video id="video" playsinline muted></video>
         <canvas id="overlay"></canvas>
+
+        <!-- NEW: Tap-to-play overlay for upload mode -->
+        <button id="tapPlayOverlay" class="tapPlay" type="button" aria-label="Tap to play">
+          <span class="tapPlayInner">
+            <span class="tapPlayIcon">▶</span>
+            <span class="tapPlayText">Tap to Play</span>
+            <span class="tapPlaySub">If autoplay is blocked, tap here once.</span>
+          </span>
+        </button>
+
         <div id="hud" class="hud"></div>
       </div>
+
       <p class="small">
         Ground line + crosshair help you align heel strike/toe-off to the “floor”.
       </p>
@@ -205,6 +217,45 @@
     <p class="small">On-device processing (no server). Best in Chrome/Safari.</p>
   </footer>
 
+  <!-- IMPORTANT: Your existing app.js remains. We just add a tiny overlay handler below. -->
   <script src="app.js"></script>
+
+  <!-- Overlay handler: tap => play -->
+  <script>
+    const tapOverlay = document.getElementById("tapPlayOverlay");
+    const vid = document.getElementById("video");
+
+    function hideOverlay() {
+      tapOverlay.classList.add("hidden");
+      tapOverlay.setAttribute("aria-hidden", "true");
+    }
+
+    function showOverlay() {
+      tapOverlay.classList.remove("hidden");
+      tapOverlay.setAttribute("aria-hidden", "false");
+    }
+
+    // Show overlay when user selects a file (upload mode)
+    const fileInput = document.getElementById("videoFile");
+    fileInput.addEventListener("change", () => {
+      if (fileInput.files && fileInput.files.length > 0) showOverlay();
+    });
+
+    // Hide overlay as soon as video starts playing
+    vid.addEventListener("playing", hideOverlay);
+
+    // Tap overlay to play
+    tapOverlay.addEventListener("click", async () => {
+      try {
+        await vid.play();
+      } catch (e) {
+        // If still blocked, user can tap the native play control as backup
+        console.warn(e);
+      }
+    });
+
+    // Start hidden by default
+    hideOverlay();
+  </script>
 </body>
 </html>
