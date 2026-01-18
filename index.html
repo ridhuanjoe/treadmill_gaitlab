@@ -24,7 +24,15 @@
       <h2>Inputs</h2>
 
       <div class="row">
-        <label for="speed">Treadmill speed</label>
+        <label for="speed">
+          Treadmill speed
+          <span class="tipwrap" tabindex="0">
+            <span class="tipicon">?</span>
+            <span class="tiptext">
+              Enter treadmill belt speed. Lengths are computed from speed × time (treadmill-derived). Use km/h or m/s.
+            </span>
+          </span>
+        </label>
         <input id="speed" type="number" step="0.1" value="8.0" />
         <select id="speedUnit">
           <option value="kmh">km/h</option>
@@ -33,25 +41,61 @@
       </div>
 
       <div class="row">
-        <label for="minStrikeMs">Min time between same-foot strikes (ms)</label>
+        <label for="minStrikeMs">
+          Min time between same-foot strikes (ms)
+          <span class="tipwrap" tabindex="0">
+            <span class="tipicon">?</span>
+            <span class="tiptext">
+              Anti double-count filter. After a strike is detected for the SAME foot (e.g., Right), the app ignores any additional Right strikes for this many milliseconds.
+              Typical default: 300 ms (try 220–400).
+            </span>
+          </span>
+        </label>
         <input id="minStrikeMs" type="number" step="10" value="300" />
         <div></div>
       </div>
 
       <div class="row">
-        <label for="smoothN">Smoothing window (frames)</label>
+        <label for="smoothN">
+          Smoothing window (frames)
+          <span class="tipwrap" tabindex="0">
+            <span class="tipicon">?</span>
+            <span class="tiptext">
+              Reduces jitter in the foot trajectory. Higher = smoother but slightly delayed strike timing.
+              Typical: 5 frames (try 3–7).
+            </span>
+          </span>
+        </label>
         <input id="smoothN" type="number" step="1" value="5" min="1" max="15" />
         <div></div>
       </div>
 
       <div class="row">
-        <label for="visThresh">Landmark visibility threshold</label>
+        <label for="visThresh">
+          Landmark visibility threshold
+          <span class="tipwrap" tabindex="0">
+            <span class="tipicon">?</span>
+            <span class="tiptext">
+              MediaPipe gives each joint a confidence (“visibility”). Points below this are ignored.
+              Raise for cleaner data; lower if feet are sometimes blocked. Typical: 0.55.
+            </span>
+          </span>
+        </label>
         <input id="visThresh" type="number" step="0.05" value="0.55" min="0" max="1" />
         <div></div>
       </div>
 
       <div class="row">
-        <label for="groundTolPx">Ground tolerance (px)</label>
+        <label for="groundTolPx">
+          Ground tolerance (px)
+          <span class="tipwrap" tabindex="0">
+            <span class="tipicon">?</span>
+            <span class="tiptext">
+              A strike is only counted if the foot is close to the ground line within this many pixels.
+              Smaller = stricter; larger = more forgiving. Typical: 15–22 px.
+            </span>
+          </span>
+        </label>
         <input id="groundTolPx" type="number" step="1" value="18" min="5" max="60" />
         <div></div>
       </div>
@@ -68,7 +112,15 @@
       </div>
 
       <div class="row">
-        <label for="videoFile">Upload recorded video</label>
+        <label for="videoFile">
+          Upload recorded video
+          <span class="tipwrap" tabindex="0">
+            <span class="tipicon">?</span>
+            <span class="tiptext">
+              Use a side-view treadmill clip (10–20 seconds). MP4 works best. Processing will capture 10 steps automatically.
+            </span>
+          </span>
+        </label>
         <input id="videoFile" type="file" accept="video/*" />
         <div></div>
       </div>
@@ -106,7 +158,8 @@
       </p>
     </section>
 
-    <section class="card">
+    <!-- BIGGER Live View (full width) -->
+    <section class="card wide live">
       <h2>Live View</h2>
       <div class="videoWrap">
         <video id="video" playsinline muted></video>
