@@ -1,17 +1,16 @@
 // Treadmill Gait Lab (Browser-only)
-// Live Camera + Upload Video
-// MediaPipe Pose (CDN) + side-view foot strike detection
+// Implements:
+// 1) More stable timing (upload uses requestVideoFrameCallback timestamps; live uses performance.now)
+// 2) Ground line + crosshair + ground calibration button
+// 3) Analyze workflow: 10s warm-up -> 5s countdown -> analyze 10 steps (camera stays on)
 //
-// FIXES INCLUDED:
-// 1) Correct constructor: new Pose(...)
-// 2) Pinned locateFile to the SAME pose version used in index.html
-// 3) stopAll() no longer overwrites error status
-//
-// Requirements:
-// - Must be opened via GitHub Pages (HTTPS).
-// - Use Safari/Chrome directly (avoid in-app browser).
+// Notes:
+// - Side view, one runner.
+// - Lengths are treadmill-derived: speed (m/s) * time (sec).
+// - Strike detection: local MAX in foot vertical position + velocity sign change,
+//   plus optional "near ground" gate for consistency.
 
-const POSE_VERSION = "0.5.1675469404"; // must match index.html script version
+const POSE_VERSION = "0.5.1675469404";
 
 const videoEl = document.getElementById("video");
 const canvasEl = document.getElementById("overlay");
@@ -20,6 +19,9 @@ const ctx = canvasEl.getContext("2d");
 const startCamBtn = document.getElementById("startCamBtn");
 const stopBtn = document.getElementById("stopBtn");
 const resetBtn = document.getElementById("resetBtn");
+
+const setGroundBtn = document.getElementById("setGroundBtn");
+const analyzeBtn = document.getElementById("analyzeBtn");
 
 const videoFileInput = document.getElementById("videoFile");
 const processUploadBtn = document.getElementById("processUploadBtn");
@@ -32,30 +34,50 @@ const speedUnitSelect = document.getElementById("speedUnit");
 const minStrikeMsInput = document.getElementById("minStrikeMs");
 const smoothNInput = document.getElementById("smoothN");
 const visThreshInput = document.getElementById("visThresh");
+const groundTolPxInput = document.getElementById("groundTolPx");
 
 const qualityEl = document.getElementById("quality");
 const facingEl = document.getElementById("facing");
 const lastSideEl = document.getElementById("lastSide");
 const lastFreqEl = document.getElementById("lastFreq");
 const statusEl = document.getElementById("status");
+const hudEl = document.getElementById("hud");
 
 let pose = null;
-let running = false;
+
+// Mode/state
+// - streamOn: camera active
+// - runningLoop: pose loop active
+// - analyzeState: "idle" | "warmup" | "countdown" | "analyzing"
+let streamOn = false;
+let runningLoop = false;
 let usingUpload = false;
+let analyzeState = "idle";
 
 let stream = null;
 let uploadedUrl = null;
+
+// Frame/time handling
 let rafId = null;
+let lastFrameTimeMs = null; // set by live (performance.now) or upload (requestVideoFrameCallback metadata)
+let lastLandmarks = null;   // last pose landmarks (for ground calibration)
+
+// Ground line
+let groundY = null;
+let groundCalibrated = false;
+let groundCalibrating = false;
+let groundSamples = [];
 
 // Export rows
 const rows = [];
 
 // Strike detection state
 const footState = {
-  R: { yHist: [], tLastStrike: null, lastMaxTime: null },
-  L: { yHist: [], tLastStrike: null, lastMaxTime: null },
+  R: { yHist: [], ySmHist: [], tLastStrike: null, lastMaxTime: null },
+  L: { yHist: [], ySmHist: [], tLastStrike: null, lastMaxTime: null },
 };
-let lastAnyStrike = null;
+
+let lastAnyStrike = null; // {side, tMs}
 let stepCount = 0;
 
 // Tracking quality
@@ -64,15 +86,27 @@ let totalFrames = 0;
 
 // MediaPipe landmark indices
 const IDX = {
+  L_SHOULDER: 11,
+  R_SHOULDER: 12,
+  L_HIP: 23,
+  R_HIP: 24,
+  L_KNEE: 25,
+  R_KNEE: 26,
   L_ANKLE: 27,
   R_ANKLE: 28,
   L_HEEL: 29,
   R_HEEL: 30,
+  L_FOOT: 31,
+  R_FOOT: 32,
 };
 
 // ---------------- Utilities ----------------
 function setStatus(msg) {
-  if (statusEl) statusEl.textContent = `Status: ${msg}`;
+  statusEl.textContent = `Status: ${msg}`;
+}
+
+function setHUD(msg) {
+  hudEl.textContent = msg || "";
 }
 
 function getSpeedMS() {
@@ -111,7 +145,9 @@ function updateCanvasSize() {
   canvasEl.height = h;
 }
 
-function nowVideoMs() {
+function getTimeMs() {
+  // Use lastFrameTimeMs if available (upload) else fallback
+  if (lastFrameTimeMs !== null) return lastFrameTimeMs;
   return videoEl.currentTime * 1000;
 }
 
@@ -123,9 +159,10 @@ function setStatusQuality() {
   else qualityEl.textContent = "—";
 }
 
+// Facing detection (side view)
 function estimateFacingDirection(landmarks) {
-  const leftIdx = [11, 23, 25, 27, 29, 31];
-  const rightIdx = [12, 24, 26, 28, 30, 32];
+  const leftIdx = [IDX.L_SHOULDER, IDX.L_HIP, IDX.L_KNEE, IDX.L_ANKLE, IDX.L_HEEL, IDX.L_FOOT];
+  const rightIdx = [IDX.R_SHOULDER, IDX.R_HIP, IDX.R_KNEE, IDX.R_ANKLE, IDX.R_HEEL, IDX.R_FOOT];
 
   let l = 0, r = 0;
   for (const i of leftIdx) l += (landmarks[i]?.visibility ?? 0);
@@ -136,7 +173,14 @@ function estimateFacingDirection(landmarks) {
   return diff > 0 ? "Facing Right" : "Facing Left";
 }
 
-// --------------- Table + Export ---------------
+function percentile(arr, p) {
+  if (!arr.length) return null;
+  const a = arr.slice().sort((x, y) => x - y);
+  const idx = Math.floor((p / 100) * (a.length - 1));
+  return a[idx];
+}
+
+// ---------------- Table + Export ----------------
 function addRowToTable(rowObj) {
   rows.push(rowObj);
 
@@ -209,338 +253,27 @@ function downloadCSV() {
   a.click();
 }
 
-// --------------- Strike Detection ---------------
-function getFootY(landmarks, side, visThresh) {
-  const aIdx = side === "R" ? IDX.R_ANKLE : IDX.L_ANKLE;
-  const hIdx = side === "R" ? IDX.R_HEEL : IDX.L_HEEL;
+// ---------------- Ground line + drawing ----------------
+function drawGroundOverlay() {
+  if (groundY === null) return;
 
-  const a = landmarks[aIdx];
-  const h = landmarks[hIdx];
-  if (!a || !h) return { ok: false, y: null };
-
-  const aVis = (a.visibility ?? 0);
-  const hVis = (h.visibility ?? 0);
-  if (aVis < visThresh || hVis < visThresh) return { ok: false, y: null };
-
-  const yPix = ((a.y + h.y) / 2) * canvasEl.height;
-  return { ok: true, y: yPix };
-}
-
-function detectStrike(side, tMs, yPix, minStrikeMs, smoothN) {
-  const st = footState[side];
-  st.yHist.push(yPix);
-  if (st.yHist.length > 60) st.yHist.shift();
-  if (st.yHist.length < 5) return false;
-
-  const ySm = movingAverage(st.yHist, smoothN);
-
-  const ySeries = st.yHist.slice();
-  ySeries[ySeries.length - 1] = ySm;
-
-  const n = ySeries.length;
-  const y2 = ySeries[n - 3];
-  const y1 = ySeries[n - 2];
-  const y0 = ySeries[n - 1];
-
-  // local MAX in y => foot lowest point (image coords)
-  const isLocalMax = (y1 > y2 && y1 > y0);
-  if (!isLocalMax) return false;
-
-  if (st.tLastStrike !== null && (tMs - st.tLastStrike) < minStrikeMs) return false;
-  if (st.lastMaxTime !== null && (tMs - st.lastMaxTime) < Math.max(120, minStrikeMs * 0.5)) return false;
-
-  st.lastMaxTime = tMs;
-  return true;
-}
-
-function registerStrike(side, tMs) {
-  const vMS = getSpeedMS();
-  const st = footState[side];
-
-  // stride
-  let strideTimeMs = null, strideLenM = null, strideFreqHz = null;
-  if (st.tLastStrike !== null) {
-    strideTimeMs = tMs - st.tLastStrike;
-    const strideTimeSec = strideTimeMs / 1000.0;
-    if (strideTimeSec > 0) {
-      strideFreqHz = 1.0 / strideTimeSec;
-      strideLenM = vMS * strideTimeSec;
-    }
-  }
-  st.tLastStrike = tMs;
-
-  // step
-  let stepTimeMs = null, stepLenM = null;
-  if (lastAnyStrike !== null && lastAnyStrike.side !== side) {
-    stepTimeMs = tMs - lastAnyStrike.tMs;
-    const stepTimeSec = stepTimeMs / 1000.0;
-    if (stepTimeSec > 0) stepLenM = vMS * stepTimeSec;
-  }
-
-  lastAnyStrike = { side, tMs };
-
-  stepCount += 1;
-  const label = `${stepCount} – ${side === "R" ? "Right" : "Left"}`;
-  addRowToTable({ stepLabel: label, stepTimeMs, stepLenM, strideTimeMs, strideLenM, strideFreqHz });
-
-  lastSideEl.textContent = side === "R" ? "Right" : "Left";
-  if (strideFreqHz !== null && isFinite(strideFreqHz)) lastFreqEl.textContent = fmt(strideFreqHz, 3);
-
-  if (stepCount >= 10) stopAll(false);
-}
-
-// --------------- Drawing ---------------
-function drawResults(results) {
-  updateCanvasSize();
   ctx.save();
-  ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
-  ctx.drawImage(results.image, 0, 0, canvasEl.width, canvasEl.height);
 
-  if (results.poseLandmarks) {
-    drawConnectors(ctx, results.poseLandmarks, POSE_CONNECTIONS, { lineWidth: 3 });
-    drawLandmarks(ctx, results.poseLandmarks, { lineWidth: 2, radius: 2 });
-  }
-  ctx.restore();
-}
+  // Ground line
+  ctx.globalAlpha = 0.9;
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = "rgba(232,236,255,0.85)";
+  ctx.beginPath();
+  ctx.moveTo(0, groundY);
+  ctx.lineTo(canvasEl.width, groundY);
+  ctx.stroke();
 
-// --------------- Pose Callback ---------------
-async function onPoseResults(results) {
-  if (!running) return;
+  // Crosshair at center
+  const cx = canvasEl.width / 2;
+  const cy = groundY;
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "rgba(232,236,255,0.65)";
 
-  totalFrames += 1;
-
-  if (results.poseLandmarks && results.poseLandmarks.length > 0) {
-    const visThresh = clamp(Number(visThreshInput.value || 0.55), 0, 1);
-    const minStrikeMs = Math.max(120, Number(minStrikeMsInput.value || 300));
-    const smoothN = Math.max(1, Math.min(15, Number(smoothNInput.value || 5)));
-
-    facingEl.textContent = estimateFacingDirection(results.poseLandmarks);
-
-    const tMs = nowVideoMs();
-    const r = getFootY(results.poseLandmarks, "R", visThresh);
-    const l = getFootY(results.poseLandmarks, "L", visThresh);
-
-    if (r.ok && l.ok) goodFrames += 1;
-    setStatusQuality();
-
-    drawResults(results);
-
-    if (r.ok && detectStrike("R", tMs, r.y, minStrikeMs, smoothN)) registerStrike("R", tMs);
-    if (l.ok && detectStrike("L", tMs, l.y, minStrikeMs, smoothN)) registerStrike("L", tMs);
-  } else {
-    setStatusQuality();
-    facingEl.textContent = "—";
-  }
-}
-
-// --------------- Init MediaPipe Pose ---------------
-async function initPose() {
-  if (pose) return;
-
-  // ✅ IMPORTANT: With CDN script tags, Pose is a constructor function.
-  // Use `new Pose(...)`, NOT `new Pose.Pose(...)`.
-  pose = new Pose({
-    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose@${POSE_VERSION}/${file}`
-  });
-
-  pose.setOptions({
-    modelComplexity: 1,
-    smoothLandmarks: true,
-    enableSegmentation: false,
-    minDetectionConfidence: 0.5,
-    minTrackingConfidence: 0.5
-  });
-
-  pose.onResults(onPoseResults);
-}
-
-// --------------- Frame Loop ---------------
-async function loopSendFrames() {
-  if (!running) return;
-
-  try {
-    await pose.send({ image: videoEl });
-  } catch (e) {
-    console.error(e);
-    setStatus(`Pose send failed: ${e?.message || e}`);
-    stopAll(false);
-    return;
-  }
-
-  rafId = requestAnimationFrame(loopSendFrames);
-}
-
-function stopAll(setStoppedStatus = true) {
-  running = false;
-
-  stopBtn.disabled = true;
-  startCamBtn.disabled = false;
-  processUploadBtn.disabled = (videoFileInput.files.length === 0);
-
-  if (rafId) {
-    cancelAnimationFrame(rafId);
-    rafId = null;
-  }
-
-  if (usingUpload) {
-    videoEl.pause();
-  }
-
-  if (stream) {
-    stream.getTracks().forEach(t => t.stop());
-    stream = null;
-  }
-
-  if (setStoppedStatus) setStatus("Stopped");
-}
-
-function resetAllState() {
-  footState.R.yHist = [];
-  footState.L.yHist = [];
-  footState.R.tLastStrike = null;
-  footState.L.tLastStrike = null;
-  footState.R.lastMaxTime = null;
-  footState.L.lastMaxTime = null;
-
-  lastAnyStrike = null;
-  stepCount = 0;
-
-  goodFrames = 0;
-  totalFrames = 0;
-
-  qualityEl.textContent = "—";
-  facingEl.textContent = "—";
-  lastSideEl.textContent = "—";
-  lastFreqEl.textContent = "—";
-
-  resetTable();
-}
-
-// --------------- UI Handlers ---------------
-resetBtn.addEventListener("click", () => {
-  resetAllState();
-  setStatus("Reset");
-});
-
-stopBtn.addEventListener("click", () => stopAll(true));
-downloadBtn.addEventListener("click", () => downloadCSV());
-
-videoFileInput.addEventListener("change", () => {
-  processUploadBtn.disabled = (videoFileInput.files.length === 0);
-});
-
-startCamBtn.addEventListener("click", async () => {
-  try {
-    await initPose();
-    resetAllState();
-
-    usingUpload = false;
-
-    if (uploadedUrl) {
-      URL.revokeObjectURL(uploadedUrl);
-      uploadedUrl = null;
-    }
-
-    videoEl.srcObject = null;
-    videoEl.src = "";
-    videoEl.muted = true;
-    videoEl.playsInline = true;
-
-    setStatus("Requesting camera permission…");
-
-    const constraints = {
-      audio: false,
-      video: {
-        facingMode: { ideal: "environment" },
-        width: { ideal: 1280 },
-        height: { ideal: 720 }
-      }
-    };
-
-    stream = await navigator.mediaDevices.getUserMedia(constraints);
-    videoEl.srcObject = stream;
-
-    await videoEl.play();
-
-    running = true;
-    startCamBtn.disabled = true;
-    stopBtn.disabled = false;
-    processUploadBtn.disabled = true;
-
-    setStatus("Live camera running");
-    rafId = requestAnimationFrame(loopSendFrames);
-
-  } catch (e) {
-    console.error(e);
-    setStatus(`Camera failed: ${e?.name || ""} ${e?.message || e}`);
-    stopAll(false);
-  }
-});
-
-processUploadBtn.addEventListener("click", async () => {
-  try {
-    await initPose();
-    resetAllState();
-
-    const file = videoFileInput.files[0];
-    if (!file) {
-      setStatus("Please choose a video file first.");
-      return;
-    }
-
-    usingUpload = true;
-
-    // stop camera
-    if (stream) {
-      stream.getTracks().forEach(t => t.stop());
-      stream = null;
-    }
-
-    if (uploadedUrl) URL.revokeObjectURL(uploadedUrl);
-    uploadedUrl = URL.createObjectURL(file);
-
-    videoEl.srcObject = null;
-    videoEl.src = uploadedUrl;
-    videoEl.muted = true;
-    videoEl.playsInline = true;
-
-    setStatus("Loading uploaded video…");
-    await videoEl.play();
-
-    running = true;
-    startCamBtn.disabled = true;
-    stopBtn.disabled = false;
-    processUploadBtn.disabled = true;
-
-    setStatus("Processing uploaded video…");
-    rafId = requestAnimationFrame(async function uploadLoop() {
-      if (!running) return;
-
-      if (videoEl.ended) {
-        setStatus("Upload processing finished");
-        stopAll(false);
-        return;
-      }
-
-      try {
-        await pose.send({ image: videoEl });
-      } catch (e) {
-        console.error(e);
-        setStatus(`Pose send failed: ${e?.message || e}`);
-        stopAll(false);
-        return;
-      }
-
-      rafId = requestAnimationFrame(uploadLoop);
-    });
-
-  } catch (e) {
-    console.error(e);
-    setStatus(`Upload failed: ${e?.message || e}`);
-    stopAll(false);
-  }
-});
-
-// --------------- Initial ---------------
-resetAllState();
-setStatus("Ready (open via GitHub Pages HTTPS link)");
+  ctx.beginPath();
+  ctx.moveTo(cx - 18, cy);
+  ctx.lineTo(cx + 18, cy
