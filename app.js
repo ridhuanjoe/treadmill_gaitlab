@@ -4,11 +4,10 @@
 // 2) Ground line + crosshair + ground calibration button
 // 3) Analyze workflow: 10s warm-up -> 5s countdown -> analyze 10 steps (camera stays on)
 //
-// Notes:
-// - Side view, one runner.
-// - Lengths are treadmill-derived: speed (m/s) * time (sec).
-// - Strike detection: local MAX in foot vertical position + velocity sign change,
-//   plus optional "near ground" gate for consistency.
+// Amendments in THIS version:
+// - Step length now computed reliably in upload + live using per-foot last strike times
+// - Step label is "Right" / "Left" (as requested)
+// - Everything else unchanged
 
 const POSE_VERSION = "0.5.1675469404";
 
@@ -46,9 +45,6 @@ const hudEl = document.getElementById("hud");
 let pose = null;
 
 // Mode/state
-// - streamOn: camera active
-// - runningLoop: pose loop active
-// - analyzeState: "idle" | "warmup" | "countdown" | "analyzing"
 let streamOn = false;
 let runningLoop = false;
 let usingUpload = false;
@@ -59,8 +55,8 @@ let uploadedUrl = null;
 
 // Frame/time handling
 let rafId = null;
-let lastFrameTimeMs = null; // set by live (performance.now) or upload (requestVideoFrameCallback metadata)
-let lastLandmarks = null;   // last pose landmarks (for ground calibration)
+let lastFrameTimeMs = null;
+let lastLandmarks = null;
 
 // Ground line
 let groundY = null;
@@ -77,7 +73,10 @@ const footState = {
   L: { yHist: [], ySmHist: [], tLastStrike: null, lastMaxTime: null },
 };
 
-let lastAnyStrike = null; // {side, tMs}
+// For reliable STEP TIME: last accepted strike per foot
+let lastStrikeTime = { R: null, L: null };
+
+let lastAnyStrike = null; // {side, tMs} (used only as a global refractory reference)
 let stepCount = 0;
 
 // Tracking quality
@@ -146,7 +145,6 @@ function updateCanvasSize() {
 }
 
 function getTimeMs() {
-  // Use lastFrameTimeMs if available (upload) else fallback
   if (lastFrameTimeMs !== null) return lastFrameTimeMs;
   return videoEl.currentTime * 1000;
 }
@@ -259,7 +257,6 @@ function drawGroundOverlay() {
 
   ctx.save();
 
-  // Ground line
   ctx.globalAlpha = 0.9;
   ctx.lineWidth = 3;
   ctx.strokeStyle = "rgba(232,236,255,0.85)";
@@ -268,7 +265,6 @@ function drawGroundOverlay() {
   ctx.lineTo(canvasEl.width, groundY);
   ctx.stroke();
 
-  // Crosshair at center
   const cx = canvasEl.width / 2;
   const cy = groundY;
   ctx.lineWidth = 2;
@@ -284,7 +280,6 @@ function drawGroundOverlay() {
   ctx.lineTo(cx, cy + 18);
   ctx.stroke();
 
-  // Label
   ctx.fillStyle = "rgba(232,236,255,0.9)";
   ctx.font = "16px system-ui, -apple-system, Segoe UI, Roboto, Arial";
   ctx.fillText(groundCalibrated ? "Ground (calibrated)" : "Ground (estimated)", 12, Math.max(22, groundY - 10));
@@ -293,10 +288,8 @@ function drawGroundOverlay() {
 }
 
 function updateEstimatedGroundFromLandmarks(landmarks, visThresh) {
-  // If user calibrated, don't overwrite
   if (groundCalibrated) return;
 
-  // Use max heel y as a running estimate (when visible)
   const lh = landmarks[IDX.L_HEEL];
   const rh = landmarks[IDX.R_HEEL];
   const goodL = lh && (lh.visibility ?? 0) >= visThresh;
@@ -310,15 +303,11 @@ function updateEstimatedGroundFromLandmarks(landmarks, visThresh) {
   const y = (yL !== null && yR !== null) ? Math.max(yL, yR) : (yL !== null ? yL : yR);
 
   if (groundY === null) groundY = y;
-  else {
-    // slow adapt (avoid jumping)
-    groundY = 0.9 * groundY + 0.1 * y;
-  }
+  else groundY = 0.9 * groundY + 0.1 * y;
 }
 
 // ---------------- Strike Detection ----------------
 function getFootY(landmarks, side, visThresh) {
-  // Blend ankle + heel y for stability
   const aIdx = side === "R" ? IDX.R_ANKLE : IDX.L_ANKLE;
   const hIdx = side === "R" ? IDX.R_HEEL : IDX.L_HEEL;
 
@@ -337,11 +326,9 @@ function getFootY(landmarks, side, visThresh) {
 function detectStrike(side, tMs, yPix, minStrikeMs, smoothN, groundTolPx) {
   const st = footState[side];
 
-  // history
   st.yHist.push(yPix);
   if (st.yHist.length > 80) st.yHist.shift();
 
-  // smoothed history
   const ySm = movingAverage(st.yHist, smoothN);
   st.ySmHist.push(ySm);
   if (st.ySmHist.length > 80) st.ySmHist.shift();
@@ -353,40 +340,36 @@ function detectStrike(side, tMs, yPix, minStrikeMs, smoothN, groundTolPx) {
   const y1 = st.ySmHist[n - 2];
   const y0 = st.ySmHist[n - 1];
 
-  // local MAX in y => foot lowest point (image coords)
   const isLocalMax = (y1 > y2 && y1 > y0);
   if (!isLocalMax) return false;
 
-  // velocity sign change around peak (helps stability)
   const dyPrev = y1 - y2;
   const dyNext = y0 - y1;
   const hasSignChange = (dyPrev > 0 && dyNext < 0);
   if (!hasSignChange) return false;
 
-  // optional: near-ground gate (best when ground is calibrated)
   if (groundY !== null) {
     const nearGround = Math.abs(y1 - groundY) <= groundTolPx;
     if (!nearGround) return false;
   }
 
-  // same-foot refractory
   if (st.tLastStrike !== null && (tMs - st.tLastStrike) < minStrikeMs) return false;
 
-  // prevent multiple maxima hits very close together
   if (st.lastMaxTime !== null && (tMs - st.lastMaxTime) < Math.max(120, minStrikeMs * 0.5)) return false;
 
   st.lastMaxTime = tMs;
   return true;
 }
 
+// ---------------- IMPORTANT: UPDATED registerStrike (step time/length fix + Right/Left labels) ----------------
 function registerStrike(side, tMs) {
   const vMS = getSpeedMS();
   const st = footState[side];
 
-  // global refractory: avoid double-count in same instant
+  // global refractory (avoid double-count in same instant)
   if (lastAnyStrike && (tMs - lastAnyStrike.tMs) < 120) return;
 
-  // stride (same foot)
+  // ----- STRIDE (same foot) -----
   let strideTimeMs = null, strideLenM = null, strideFreqHz = null;
   if (st.tLastStrike !== null) {
     strideTimeMs = tMs - st.tLastStrike;
@@ -398,25 +381,37 @@ function registerStrike(side, tMs) {
   }
   st.tLastStrike = tMs;
 
-  // step (alternating feet only)
+  // ----- STEP (opposite foot) -----
+  const opp = (side === "R") ? "L" : "R";
   let stepTimeMs = null, stepLenM = null;
-  if (lastAnyStrike !== null && lastAnyStrike.side !== side) {
-    stepTimeMs = tMs - lastAnyStrike.tMs;
+
+  if (lastStrikeTime[opp] !== null) {
+    stepTimeMs = tMs - lastStrikeTime[opp];
     const stepTimeSec = stepTimeMs / 1000.0;
     if (stepTimeSec > 0) stepLenM = vMS * stepTimeSec;
   }
 
+  // update last strike time for this foot
+  lastStrikeTime[side] = tMs;
+
+  // keep a reference time for global refractory only
   lastAnyStrike = { side, tMs };
 
   stepCount += 1;
-  const label = `${stepCount} – ${side === "R" ? "Right" : "Left"}`;
+  const label = (side === "R") ? "Right" : "Left";
 
-  addRowToTable({ stepLabel: label, stepTimeMs, stepLenM, strideTimeMs, strideLenM, strideFreqHz });
+  addRowToTable({
+    stepLabel: label,
+    stepTimeMs,
+    stepLenM,
+    strideTimeMs,
+    strideLenM,
+    strideFreqHz
+  });
 
-  lastSideEl.textContent = side === "R" ? "Right" : "Left";
+  lastSideEl.textContent = label;
   if (strideFreqHz !== null && isFinite(strideFreqHz)) lastFreqEl.textContent = fmt(strideFreqHz, 3);
 
-  // stop after 10 steps (end analysis, keep camera on if live)
   if (stepCount >= 10) {
     if (usingUpload) {
       stopAll(true);
@@ -435,18 +430,14 @@ function drawResults(results) {
   ctx.save();
   ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
 
-  // draw video
   ctx.drawImage(results.image, 0, 0, canvasEl.width, canvasEl.height);
 
-  // skeleton
   if (results.poseLandmarks) {
     drawConnectors(ctx, results.poseLandmarks, POSE_CONNECTIONS, { lineWidth: 3 });
     drawLandmarks(ctx, results.poseLandmarks, { lineWidth: 2, radius: 2 });
   }
 
-  // ground line + crosshair
   drawGroundOverlay();
-
   ctx.restore();
 }
 
@@ -466,10 +457,8 @@ async function onPoseResults(results) {
 
     facingEl.textContent = estimateFacingDirection(results.poseLandmarks);
 
-    // update estimated ground unless calibrated
     updateEstimatedGroundFromLandmarks(results.poseLandmarks, visThresh);
 
-    // ground calibration sampling
     if (groundCalibrating) {
       const lh = results.poseLandmarks[IDX.L_HEEL];
       const rh = results.poseLandmarks[IDX.R_HEEL];
@@ -479,7 +468,6 @@ async function onPoseResults(results) {
       if (goodR) groundSamples.push(rh.y * canvasEl.height);
     }
 
-    // quality = both feet visible
     const rOk = (results.poseLandmarks[IDX.R_HEEL]?.visibility ?? 0) >= visThresh &&
                 (results.poseLandmarks[IDX.R_ANKLE]?.visibility ?? 0) >= visThresh;
     const lOk = (results.poseLandmarks[IDX.L_HEEL]?.visibility ?? 0) >= visThresh &&
@@ -489,7 +477,6 @@ async function onPoseResults(results) {
 
     drawResults(results);
 
-    // Only detect strikes during "analyzing" or upload processing
     if (analyzeState === "analyzing" || usingUpload) {
       const tMs = getTimeMs();
       const r = getFootY(results.poseLandmarks, "R", visThresh);
@@ -537,7 +524,6 @@ async function calibrateGroundLine() {
   setStatus("Calibrating ground line… keep feet visible (1 second)");
   setHUD("CALIBRATING…");
 
-  // sample for ~1 second
   await new Promise((resolve) => setTimeout(resolve, 1000));
 
   groundCalibrating = false;
@@ -548,7 +534,6 @@ async function calibrateGroundLine() {
     return;
   }
 
-  // Use high percentile (near the lowest point/ground contact)
   const gy = percentile(groundSamples, 90);
   groundY = gy;
   groundCalibrated = true;
@@ -563,18 +548,15 @@ async function runAnalyzeWorkflow() {
     return;
   }
 
-  // Lock buttons during workflow
   analyzeBtn.disabled = true;
   setGroundBtn.disabled = true;
   processUploadBtn.disabled = true;
 
-  // Warm-up (10s)
   analyzeState = "warmup";
   setStatus("Warm-up: run naturally (10 seconds).");
   setHUD("WARM-UP 10s");
   await sleepWithCountdownHUD(10, "WARM-UP");
 
-  // Countdown (5s)
   analyzeState = "countdown";
   setStatus("Get ready… analysis begins soon.");
   for (let i = 5; i >= 1; i--) {
@@ -583,17 +565,12 @@ async function runAnalyzeWorkflow() {
   }
   setHUD("");
 
-  // Start analysis (capture 10 steps)
   resetAnalysisMetricsOnly();
   analyzeState = "analyzing";
   setStatus("Analyzing… capturing 10 steps.");
   setHUD("ANALYZING…");
-
-  // When finished, stopAnalysisOnly() will clear HUD/state.
-  // We keep HUD here; stopAnalysisOnly clears it.
 }
 
-// helper for warmup HUD countdown
 async function sleepWithCountdownHUD(seconds, label) {
   for (let s = seconds; s >= 1; s--) {
     setHUD(`${label} ${s}s`);
@@ -603,9 +580,7 @@ async function sleepWithCountdownHUD(seconds, label) {
   setHUD("");
 }
 
-// Reset only analysis metrics (not camera, not ground line)
 function resetAnalysisMetricsOnly() {
-  // reset strike state
   footState.R.yHist = [];
   footState.L.yHist = [];
   footState.R.ySmHist = [];
@@ -616,6 +591,8 @@ function resetAnalysisMetricsOnly() {
   footState.L.lastMaxTime = null;
 
   lastAnyStrike = null;
+  lastStrikeTime = { R: null, L: null }; // important for step length
+
   stepCount = 0;
 
   lastSideEl.textContent = "—";
@@ -629,7 +606,6 @@ function stopAnalysisOnly() {
   setHUD("");
   setStatusQuality();
 
-  // re-enable buttons
   analyzeBtn.disabled = false;
   setGroundBtn.disabled = false;
   processUploadBtn.disabled = (videoFileInput.files.length === 0);
@@ -642,7 +618,6 @@ async function loopLiveFrames() {
   if (!runningLoop) return;
 
   try {
-    // Stable real-time timestamp for live processing
     lastFrameTimeMs = performance.now();
     await pose.send({ image: videoEl });
   } catch (e) {
@@ -655,7 +630,7 @@ async function loopLiveFrames() {
   rafId = requestAnimationFrame(loopLiveFrames);
 }
 
-// ---------------- Upload processing loop (frame-accurate when available) ----------------
+// ---------------- Upload processing loop ----------------
 function startUploadFrameLoop() {
   const hasRVFC = typeof videoEl.requestVideoFrameCallback === "function";
 
@@ -668,7 +643,6 @@ function startUploadFrameLoop() {
       return;
     }
 
-    // fallback timestamp for browsers without RVFC
     lastFrameTimeMs = videoEl.currentTime * 1000;
 
     try {
@@ -697,7 +671,6 @@ function startUploadFrameLoop() {
       return;
     }
 
-    // Frame-accurate timestamp
     lastFrameTimeMs = metadata.mediaTime * 1000;
 
     try {
@@ -751,7 +724,6 @@ function stopAll(setStoppedStatus = true) {
 }
 
 function resetAllState() {
-  // full reset (includes ground)
   groundY = null;
   groundCalibrated = false;
   groundCalibrating = false;
@@ -789,7 +761,6 @@ setGroundBtn.addEventListener("click", async () => {
 });
 
 analyzeBtn.addEventListener("click", async () => {
-  // prevent multiple simultaneous workflows
   if (analyzeState !== "idle") return;
   await runAnalyzeWorkflow();
 });
@@ -803,7 +774,6 @@ startCamBtn.addEventListener("click", async () => {
     usingUpload = false;
     setHUD("");
 
-    // stop upload URL if any
     if (uploadedUrl) {
       URL.revokeObjectURL(uploadedUrl);
       uploadedUrl = null;
@@ -816,7 +786,6 @@ startCamBtn.addEventListener("click", async () => {
 
     setStatus("Requesting camera permission…");
 
-    // prefer rear camera on phones
     const constraints = {
       audio: false,
       video: {
@@ -865,9 +834,8 @@ processUploadBtn.addEventListener("click", async () => {
     }
 
     usingUpload = true;
-    analyzeState = "idle"; // upload uses its own flow
+    analyzeState = "idle";
 
-    // stop camera if any
     if (stream) {
       stream.getTracks().forEach(t => t.stop());
       stream = null;
@@ -884,14 +852,12 @@ processUploadBtn.addEventListener("click", async () => {
     setStatus("Loading uploaded video…");
     await videoEl.play();
 
-    // UI state
     startCamBtn.disabled = true;
     stopBtn.disabled = false;
 
     setGroundBtn.disabled = true;
     analyzeBtn.disabled = true;
 
-    // Start analyzing immediately for upload (capture 10 steps)
     setStatus("Processing upload… capturing 10 steps.");
     setHUD("UPLOADED VIDEO");
 
