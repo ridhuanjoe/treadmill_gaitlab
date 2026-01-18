@@ -88,4 +88,119 @@
       <div class="row">
         <label for="groundTolPx">
           Ground tolerance (px)
-          <span
+          <span class="tipwrap" tabindex="0">
+            <span class="tipicon">?</span>
+            <span class="tiptext">
+              A strike is only counted if the foot is close to the ground line within this many pixels.
+              Smaller = stricter; larger = more forgiving. Typical: 15–22 px.
+            </span>
+          </span>
+        </label>
+        <input id="groundTolPx" type="number" step="1" value="18" min="5" max="60" />
+        <div></div>
+      </div>
+
+      <div class="row buttons3">
+        <button id="startCamBtn">Start Live Camera</button>
+        <button id="stopBtn" disabled>Stop</button>
+        <button id="resetBtn">Reset</button>
+      </div>
+
+      <div class="row buttons2">
+        <button id="setGroundBtn" disabled>Set Ground Line</button>
+        <button id="analyzeBtn" disabled>Analyze (10s warm-up → 5s countdown → 10 steps)</button>
+      </div>
+
+      <div class="row">
+        <label for="videoFile">
+          Upload recorded video
+          <span class="tipwrap" tabindex="0">
+            <span class="tipicon">?</span>
+            <span class="tiptext">
+              Side-view treadmill clip (10–20s). MP4 works best. If autoplay is blocked, press Play on the video controls.
+            </span>
+          </span>
+        </label>
+        <input id="videoFile" type="file" accept="video/*" />
+        <div></div>
+      </div>
+
+      <div class="row buttons1">
+        <button id="processUploadBtn" disabled>Process Uploaded Video</button>
+      </div>
+
+      <div class="row">
+        <div id="status" class="status">Status: Ready</div>
+      </div>
+
+      <div class="row info4">
+        <div>
+          <div class="kpiLabel">Tracking quality</div>
+          <div id="quality" class="kpiValue">—</div>
+        </div>
+        <div>
+          <div class="kpiLabel">Facing</div>
+          <div id="facing" class="kpiValue">—</div>
+        </div>
+        <div>
+          <div class="kpiLabel">Last step side</div>
+          <div id="lastSide" class="kpiValue">—</div>
+        </div>
+        <div>
+          <div class="kpiLabel">Last stride freq (Hz)</div>
+          <div id="lastFreq" class="kpiValue">—</div>
+        </div>
+      </div>
+
+      <p class="tip">
+        <strong>Setup tips:</strong> Side view, stable camera, hips-to-feet visible. Avoid treadmill rails blocking ankles/heels.
+        Use <strong>Set Ground Line</strong> before analysis for best heel-strike timing.
+      </p>
+    </section>
+
+    <!-- BIG Live View -->
+    <section class="card wide live">
+      <h2>Live View</h2>
+      <div class="videoWrap">
+        <video id="video" playsinline muted></video>
+        <canvas id="overlay"></canvas>
+        <div id="hud" class="hud"></div>
+      </div>
+      <p class="small">Ground line + crosshair help align heel strike/toe-off to the “floor”.</p>
+    </section>
+
+    <section class="card wide">
+      <div class="tableHeader">
+        <h2>Step & Stride Table</h2>
+        <div class="tableBtns">
+          <button id="downloadBtn" disabled>Download CSV</button>
+        </div>
+      </div>
+
+      <div class="tableWrap">
+        <table id="resultsTable">
+          <thead>
+            <tr>
+              <th>Step</th>
+              <th>Step Time (ms)</th>
+              <th>Step Length (m)</th>
+              <th>Stride Time (ms)</th>
+              <th>Stride Length (m)</th>
+              <th>Stride Frequency (Hz)</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+
+      <p class="small">Treadmill assumption: lengths are derived from belt speed × time.</p>
+    </section>
+  </main>
+
+  <footer>
+    <p class="small">On-device processing (no server). Best in Chrome/Safari.</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
