@@ -6,7 +6,7 @@
   <title>Treadmill Gait Lab (Step/Stride)</title>
   <link rel="stylesheet" href="style.css" />
 
-  <!-- MediaPipe Pose + utilities (CDN) -->
+  <!-- Pinned MediaPipe versions (stable with locateFile in app.js) -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/pose.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1675466124/drawing_utils.js"></script>
@@ -15,7 +15,7 @@
   <header>
     <h1>Treadmill Gait Lab</h1>
     <p class="sub">
-      Side-view, one runner. Use Live Camera or Upload a recorded video. Outputs step/stride time, length, and stride frequency.
+      Side-view, one runner. Live Camera or Upload video. Measures step/stride time, treadmill-derived lengths, stride frequency.
     </p>
   </header>
 
@@ -35,48 +35,62 @@
       <div class="row">
         <label for="minStrikeMs">Min time between same-foot strikes (ms)</label>
         <input id="minStrikeMs" type="number" step="10" value="300" />
+        <div></div>
       </div>
 
       <div class="row">
         <label for="smoothN">Smoothing window (frames)</label>
         <input id="smoothN" type="number" step="1" value="5" min="1" max="15" />
+        <div></div>
       </div>
 
       <div class="row">
         <label for="visThresh">Landmark visibility threshold</label>
         <input id="visThresh" type="number" step="0.05" value="0.55" min="0" max="1" />
+        <div></div>
       </div>
 
-      <div class="row buttons">
+      <div class="row">
+        <label for="groundTolPx">Ground tolerance (px)</label>
+        <input id="groundTolPx" type="number" step="1" value="18" min="5" max="60" />
+        <div></div>
+      </div>
+
+      <div class="row buttons3">
         <button id="startCamBtn">Start Live Camera</button>
         <button id="stopBtn" disabled>Stop</button>
         <button id="resetBtn">Reset</button>
       </div>
-      
-      <div class="row">
-        <div id="status" style="grid-column:1/-1; color:#aab3d6; font-size:13px;">
-          Status: —
-        </div>
+
+      <div class="row buttons2">
+        <button id="setGroundBtn" disabled>Set Ground Line</button>
+        <button id="analyzeBtn" disabled>Analyze (10s warm-up → 5s countdown → 10 steps)</button>
       </div>
-      
+
       <div class="row">
         <label for="videoFile">Upload recorded video</label>
         <input id="videoFile" type="file" accept="video/*" />
+        <div></div>
       </div>
 
-      <div class="row buttons">
+      <div class="row buttons1">
         <button id="processUploadBtn" disabled>Process Uploaded Video</button>
       </div>
 
-      <div class="row info">
+      <div class="row">
+        <div id="status" class="status">Status: Ready</div>
+      </div>
+
+      <div class="row info4">
         <div>
           <div class="kpiLabel">Tracking quality</div>
           <div id="quality" class="kpiValue">—</div>
         </div>
         <div>
-     	  <div class="kpiLabel">Facing</div>
-   	  <div id="facing" class="kpiValue">—</div>
- 	</div>
+          <div class="kpiLabel">Facing</div>
+          <div id="facing" class="kpiValue">—</div>
+        </div>
+        <div>
           <div class="kpiLabel">Last step side</div>
           <div id="lastSide" class="kpiValue">—</div>
         </div>
@@ -87,7 +101,8 @@
       </div>
 
       <p class="tip">
-        <strong>Setup tips:</strong> Place camera side-on, stable, hips-to-feet visible. Avoid treadmill rails blocking ankles.
+        <strong>Setup tips:</strong> Side view, stable camera, hips-to-feet visible. Avoid treadmill rails blocking ankles/heels.
+        Use <strong>Set Ground Line</strong> before analysis for best heel-strike timing.
       </p>
     </section>
 
@@ -96,9 +111,10 @@
       <div class="videoWrap">
         <video id="video" playsinline muted></video>
         <canvas id="overlay"></canvas>
+        <div id="hud" class="hud"></div>
       </div>
       <p class="small">
-        Skeleton overlay is optional; it helps students see if tracking is good.
+        Ground line + crosshair help you align heel strike/toe-off to the “floor”.
       </p>
     </section>
 
@@ -127,17 +143,15 @@
       </div>
 
       <p class="small">
-        This tool assumes treadmill-only: step/stride lengths are derived from treadmill speed × time.
+        Treadmill assumption: Step/stride lengths are derived from belt speed × time.
       </p>
     </section>
   </main>
 
   <footer>
-    <p class="small">Built for teaching: on-device processing, no server needed.</p>
+    <p class="small">On-device processing (no server). Best in Chrome/Safari.</p>
   </footer>
 
   <script src="app.js"></script>
 </body>
 </html>
-
-
