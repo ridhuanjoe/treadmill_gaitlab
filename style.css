@@ -119,9 +119,6 @@ button:disabled {
   background: rgba(0,0,0,0.35);
 }
 
-/* Bigger live view */
-.card.live .videoWrap { min-height: 560px; }
-
 video, canvas {
   position: absolute;
   inset: 0;
@@ -179,61 +176,4 @@ tbody td {
   border-top: 1px solid var(--line);
   padding: 10px;
   font-size: 13px;
-}
-
-/* Tooltips */
-.tipwrap {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  margin-left: 8px;
-  outline: none;
-}
-
-.tipicon {
-  width: 18px;
-  height: 18px;
-  border-radius: 999px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--text);
-  border: 1px solid var(--line);
-  background: rgba(255,255,255,0.08);
-  cursor: pointer;
-  user-select: none;
-}
-
-.tiptext {
-  position: absolute;
-  left: 0;
-  top: 26px;
-  z-index: 30;
-  width: min(340px, 72vw);
-  padding: 10px 12px;
-  border-radius: 12px;
-  border: 1px solid var(--line);
-  background: rgba(0,0,0,0.85);
-  color: var(--text);
-  font-size: 12.5px;
-  line-height: 1.35;
-  box-shadow: 0 10px 26px rgba(0,0,0,0.45);
-  opacity: 0;
-  transform: translateY(-6px);
-  pointer-events: none;
-  transition: opacity 0.15s ease, transform 0.15s ease;
-}
-
-.tipwrap:hover .tiptext,
-.tipwrap:focus .tiptext,
-.tipwrap:focus-within .tiptext {
-  opacity: 1;
-  transform: translateY(0);
-  pointer-events: auto;
-}
-
-@media (pointer: coarse) {
-  .tipicon { width: 22px; height: 22px; font-size: 13px; }
 }
