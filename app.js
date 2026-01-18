@@ -1,239 +1,942 @@
-:root {
-  --bg: #0b0d12;
-  --card: #121726;
-  --text: #e8ecff;
-  --muted: #aab3d6;
-  --line: rgba(255,255,255,0.12);
+// Treadmill Gait Lab (Browser-only)
+// REVERTED upload processing to the stable "wait until playing" approach,
+// PLUS: enforce alternating steps (R/L/R/L) so you don't get "Right-only" tables.
+
+const POSE_VERSION = "0.5.1675469404";
+
+const videoEl = document.getElementById("video");
+const canvasEl = document.getElementById("overlay");
+const ctx = canvasEl.getContext("2d");
+
+const startCamBtn = document.getElementById("startCamBtn");
+const stopBtn = document.getElementById("stopBtn");
+const resetBtn = document.getElementById("resetBtn");
+
+const setGroundBtn = document.getElementById("setGroundBtn");
+const analyzeBtn = document.getElementById("analyzeBtn");
+
+const videoFileInput = document.getElementById("videoFile");
+const processUploadBtn = document.getElementById("processUploadBtn");
+
+const downloadBtn = document.getElementById("downloadBtn");
+const tbody = document.getElementById("tbody");
+
+const speedInput = document.getElementById("speed");
+const speedUnitSelect = document.getElementById("speedUnit");
+const minStrikeMsInput = document.getElementById("minStrikeMs");
+const smoothNInput = document.getElementById("smoothN");
+const visThreshInput = document.getElementById("visThresh");
+const groundTolPxInput = document.getElementById("groundTolPx");
+
+const qualityEl = document.getElementById("quality");
+const facingEl = document.getElementById("facing");
+const lastSideEl = document.getElementById("lastSide");
+const lastFreqEl = document.getElementById("lastFreq");
+const statusEl = document.getElementById("status");
+const hudEl = document.getElementById("hud");
+
+let pose = null;
+
+// Mode/state
+let streamOn = false;
+let runningLoop = false;
+let usingUpload = false;
+let analyzeState = "idle"; // idle | warmup | countdown | analyzing
+
+let stream = null;
+let uploadedUrl = null;
+
+// Frame/time handling
+let rafId = null;
+let lastFrameTimeMs = null;
+
+// Ground line
+let groundY = null;
+let groundCalibrated = false;
+let groundCalibrating = false;
+let groundSamples = [];
+
+// Export rows
+const rows = [];
+
+// Strike detection state per foot
+const footState = {
+  R: { yHist: [], ySmHist: [], tLastStrike: null, lastMaxTime: null },
+  L: { yHist: [], ySmHist: [], tLastStrike: null, lastMaxTime: null },
+};
+
+// STEP alternation tracking (this is the key fix)
+let lastStepSide = null;      // the last side we added to the table
+let lastStepTimeMs = null;    // time when we added the last step
+let stepCount = 0;
+
+// Tracking quality
+let goodFrames = 0;
+let totalFrames = 0;
+
+// MediaPipe landmark indices
+const IDX = {
+  L_SHOULDER: 11,
+  R_SHOULDER: 12,
+  L_HIP: 23,
+  R_HIP: 24,
+  L_KNEE: 25,
+  R_KNEE: 26,
+  L_ANKLE: 27,
+  R_ANKLE: 28,
+  L_HEEL: 29,
+  R_HEEL: 30,
+  L_FOOT: 31,
+  R_FOOT: 32,
+};
+
+// ---------------- Utilities ----------------
+function setStatus(msg) {
+  statusEl.textContent = `Status: ${msg}`;
 }
 
-* { box-sizing: border-box; }
-
-body {
-  margin: 0;
-  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-  background: var(--bg);
-  color: var(--text);
+function setHUD(msg) {
+  hudEl.textContent = msg || "";
 }
 
-header, footer {
-  max-width: 1100px;
-  margin: 0 auto;
-  padding: 18px 16px;
+function clamp(v, lo, hi) {
+  return Math.max(lo, Math.min(hi, v));
 }
 
-h1 { margin: 0 0 6px; font-size: 22px; }
-.sub { margin: 0; color: var(--muted); }
-
-main.grid {
-  max-width: 1100px;
-  margin: 0 auto;
-  padding: 0 16px 24px;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 14px;
+function getSpeedMS() {
+  const v = Number(speedInput.value || 0);
+  const unit = speedUnitSelect.value;
+  if (!isFinite(v) || v <= 0) return 0;
+  return unit === "kmh" ? (v / 3.6) : v;
 }
 
-.card {
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  padding: 14px;
-  box-shadow: 0 8px 22px rgba(0,0,0,0.25);
+function fmt(x, digits = 3) {
+  if (x === null || x === undefined || !isFinite(x)) return "";
+  return Number(x).toFixed(digits);
 }
 
-.card.wide { grid-column: 1 / -1; }
-
-h2 { margin: 0 0 12px; font-size: 16px; }
-.small { color: var(--muted); margin: 10px 0 0; font-size: 13px; }
-.tip { color: var(--muted); font-size: 13px; line-height: 1.35; margin-top: 12px; }
-
-.row {
-  display: grid;
-  grid-template-columns: 1fr 140px 90px;
-  gap: 10px;
-  align-items: center;
-  margin-bottom: 10px;
+function fmtInt(x) {
+  if (x === null || x === undefined || !isFinite(x)) return "";
+  return Math.round(x).toString();
 }
 
-.row label { color: var(--muted); font-size: 13px; }
-
-.row input, .row select {
-  width: 100%;
-  padding: 10px 10px;
-  border-radius: 10px;
-  border: 1px solid var(--line);
-  background: rgba(0,0,0,0.2);
-  color: var(--text);
-  outline: none;
+function movingAverage(arr, n) {
+  if (arr.length === 0) return null;
+  const k = Math.min(n, arr.length);
+  let s = 0;
+  for (let i = arr.length - k; i < arr.length; i++) s += arr[i];
+  return s / k;
 }
 
-button {
-  padding: 10px 12px;
-  border-radius: 12px;
-  border: 1px solid var(--line);
-  background: rgba(255,255,255,0.06);
-  color: var(--text);
-  cursor: pointer;
+function updateCanvasSize() {
+  const w = videoEl.videoWidth || 1280;
+  const h = videoEl.videoHeight || 720;
+  canvasEl.width = w;
+  canvasEl.height = h;
 }
 
-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+function getTimeMs() {
+  if (lastFrameTimeMs !== null) return lastFrameTimeMs;
+  return videoEl.currentTime * 1000;
 }
 
-.row.buttons3 { grid-template-columns: 1fr 1fr 1fr; }
-.row.buttons2 { grid-template-columns: 1fr 1fr; }
-.row.buttons1 { grid-template-columns: 1fr; }
-
-.status {
-  grid-column: 1 / -1;
-  color: var(--muted);
-  font-size: 13px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: rgba(0,0,0,0.2);
+function setStatusQuality() {
+  const q = totalFrames > 0 ? (goodFrames / totalFrames) : 0;
+  if (q > 0.75) qualityEl.textContent = "Good";
+  else if (q > 0.45) qualityEl.textContent = "Medium";
+  else if (totalFrames > 15) qualityEl.textContent = "Poor";
+  else qualityEl.textContent = "—";
 }
 
-.info4 {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  margin-top: 8px;
+function estimateFacingDirection(landmarks) {
+  const leftIdx = [IDX.L_SHOULDER, IDX.L_HIP, IDX.L_KNEE, IDX.L_ANKLE, IDX.L_HEEL, IDX.L_FOOT];
+  const rightIdx = [IDX.R_SHOULDER, IDX.R_HIP, IDX.R_KNEE, IDX.R_ANKLE, IDX.R_HEEL, IDX.R_FOOT];
+
+  let l = 0, r = 0;
+  for (const i of leftIdx) l += (landmarks[i]?.visibility ?? 0);
+  for (const i of rightIdx) r += (landmarks[i]?.visibility ?? 0);
+
+  const diff = l - r;
+  if (Math.abs(diff) < 0.35) return "Unknown";
+  return diff > 0 ? "Facing Right" : "Facing Left";
 }
 
-@media (min-width: 900px) {
-  .info4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+function percentile(arr, p) {
+  if (!arr.length) return null;
+  const a = arr.slice().sort((x, y) => x - y);
+  const idx = Math.floor((p / 100) * (a.length - 1));
+  return a[idx];
 }
 
-.kpiLabel { color: var(--muted); font-size: 12px; }
-.kpiValue { font-size: 16px; margin-top: 3px; }
+// ---------------- Video readiness helpers (UPLOAD STABLE) ----------------
+function waitForEvent(target, eventName, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timeout waiting for ${eventName}`));
+    }, timeoutMs);
 
-.videoWrap {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  border-radius: 14px;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  background: rgba(0,0,0,0.35);
+    const onEvent = () => {
+      cleanup();
+      resolve();
+    };
+
+    function cleanup() {
+      clearTimeout(t);
+      target.removeEventListener(eventName, onEvent);
+    }
+
+    target.addEventListener(eventName, onEvent, { once: true });
+  });
 }
 
-/* Bigger live view */
-.card.live .videoWrap { min-height: 560px; }
+async function ensureVideoReadyAndPlaying() {
+  // metadata
+  if (videoEl.readyState < 1) {
+    await waitForEvent(videoEl, "loadedmetadata", 8000);
+  }
+  // at least 1 frame
+  if (videoEl.readyState < 2) {
+    await waitForEvent(videoEl, "loadeddata", 8000);
+  }
 
-video, canvas {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
+  // attempt play
+  try {
+    await videoEl.play();
+  } catch (e) {
+    // ignore; we handle paused below
+  }
+
+  if (videoEl.paused) {
+    throw new Error("Video is paused. Tap Play on the video controls, then press Process Uploaded Video again.");
+  }
+
+  await waitForEvent(videoEl, "playing", 4000);
 }
 
-.hud {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-  font-size: 44px;
-  font-weight: 700;
-  color: rgba(232, 236, 255, 0.95);
-  text-shadow: 0 2px 18px rgba(0,0,0,0.65);
+// ---------------- Table + Export ----------------
+function addRowToTable(rowObj) {
+  rows.push(rowObj);
+
+  const tr = document.createElement("tr");
+
+  const tdStep = document.createElement("td");
+  tdStep.textContent = rowObj.stepLabel;
+
+  const tdStepTime = document.createElement("td");
+  tdStepTime.textContent = fmtInt(rowObj.stepTimeMs);
+
+  const tdStepLen = document.createElement("td");
+  tdStepLen.textContent = fmt(rowObj.stepLenM, 3);
+
+  const tdStrideTime = document.createElement("td");
+  tdStrideTime.textContent = fmtInt(rowObj.strideTimeMs);
+
+  const tdStrideLen = document.createElement("td");
+  tdStrideLen.textContent = fmt(rowObj.strideLenM, 3);
+
+  const tdStrideFreq = document.createElement("td");
+  tdStrideFreq.textContent = fmt(rowObj.strideFreqHz, 3);
+
+  tr.append(tdStep, tdStepTime, tdStepLen, tdStrideTime, tdStrideLen, tdStrideFreq);
+  tbody.appendChild(tr);
+
+  downloadBtn.disabled = rows.length === 0;
 }
 
-.tableHeader {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
+function resetTable() {
+  rows.length = 0;
+  tbody.innerHTML = "";
+  downloadBtn.disabled = true;
 }
 
-.tableWrap {
-  width: 100%;
-  overflow: auto;
-  border-radius: 12px;
-  border: 1px solid var(--line);
+function downloadCSV() {
+  if (rows.length === 0) return;
+
+  const header = [
+    "Step",
+    "Step Time (ms)",
+    "Step Length (m)",
+    "Stride Time (ms)",
+    "Stride Length (m)",
+    "Stride Frequency (Hz)"
+  ];
+
+  const lines = [header.join(",")];
+
+  for (const r of rows) {
+    lines.push([
+      `"${r.stepLabel}"`,
+      r.stepTimeMs ?? "",
+      r.stepLenM ?? "",
+      r.strideTimeMs ?? "",
+      r.strideLenM ?? "",
+      r.strideFreqHz ?? ""
+    ].join(","));
+  }
+
+  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `treadmill_gait_${new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")}.csv`;
+  a.click();
 }
 
-table {
-  width: 100%;
-  border-collapse: collapse;
-  min-width: 820px;
+// ---------------- Ground overlay ----------------
+function drawGroundOverlay() {
+  if (groundY === null) return;
+
+  ctx.save();
+
+  ctx.globalAlpha = 0.9;
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = "rgba(232,236,255,0.85)";
+  ctx.beginPath();
+  ctx.moveTo(0, groundY);
+  ctx.lineTo(canvasEl.width, groundY);
+  ctx.stroke();
+
+  const cx = canvasEl.width / 2;
+  const cy = groundY;
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "rgba(232,236,255,0.65)";
+
+  ctx.beginPath();
+  ctx.moveTo(cx - 18, cy);
+  ctx.lineTo(cx + 18, cy);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - 18);
+  ctx.lineTo(cx, cy + 18);
+  ctx.stroke();
+
+  ctx.fillStyle = "rgba(232,236,255,0.9)";
+  ctx.font = "16px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+  ctx.fillText(groundCalibrated ? "Ground (calibrated)" : "Ground (estimated)", 12, Math.max(22, groundY - 10));
+
+  ctx.restore();
 }
 
-thead th {
-  position: sticky;
-  top: 0;
-  background: rgba(0,0,0,0.35);
-  border-bottom: 1px solid var(--line);
-  padding: 10px;
-  text-align: left;
-  font-size: 13px;
-  color: var(--muted);
+function updateEstimatedGroundFromLandmarks(landmarks, visThresh) {
+  if (groundCalibrated) return;
+
+  const lh = landmarks[IDX.L_HEEL];
+  const rh = landmarks[IDX.R_HEEL];
+  const goodL = lh && (lh.visibility ?? 0) >= visThresh;
+  const goodR = rh && (rh.visibility ?? 0) >= visThresh;
+  if (!goodL && !goodR) return;
+
+  const yL = goodL ? lh.y * canvasEl.height : null;
+  const yR = goodR ? rh.y * canvasEl.height : null;
+  const y = (yL !== null && yR !== null) ? Math.max(yL, yR) : (yL !== null ? yL : yR);
+
+  if (groundY === null) groundY = y;
+  else groundY = 0.9 * groundY + 0.1 * y;
 }
 
-tbody td {
-  border-top: 1px solid var(--line);
-  padding: 10px;
-  font-size: 13px;
+// ---------------- Strike Detection ----------------
+function getFootY(landmarks, side, visThresh) {
+  // (Reverted to your previous method: average heel+ankle)
+  const aIdx = side === "R" ? IDX.R_ANKLE : IDX.L_ANKLE;
+  const hIdx = side === "R" ? IDX.R_HEEL : IDX.L_HEEL;
+
+  const a = landmarks[aIdx];
+  const h = landmarks[hIdx];
+  if (!a || !h) return { ok: false, y: null };
+
+  const aVis = (a.visibility ?? 0);
+  const hVis = (h.visibility ?? 0);
+  if (aVis < visThresh || hVis < visThresh) return { ok: false, y: null };
+
+  const yPix = ((a.y + h.y) / 2) * canvasEl.height;
+  return { ok: true, y: yPix };
 }
 
-/* Tooltips */
-.tipwrap {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  margin-left: 8px;
-  outline: none;
+function detectStrike(side, tMs, yPix, minStrikeMs, smoothN, groundTolPx) {
+  const st = footState[side];
+
+  st.yHist.push(yPix);
+  if (st.yHist.length > 80) st.yHist.shift();
+
+  const ySm = movingAverage(st.yHist, smoothN);
+  st.ySmHist.push(ySm);
+  if (st.ySmHist.length > 80) st.ySmHist.shift();
+
+  if (st.ySmHist.length < 5) return false;
+
+  const n = st.ySmHist.length;
+  const y2 = st.ySmHist[n - 3];
+  const y1 = st.ySmHist[n - 2];
+  const y0 = st.ySmHist[n - 1];
+
+  const isLocalMax = (y1 > y2 && y1 > y0);
+  if (!isLocalMax) return false;
+
+  const dyPrev = y1 - y2;
+  const dyNext = y0 - y1;
+  const hasSignChange = (dyPrev > 0 && dyNext < 0);
+  if (!hasSignChange) return false;
+
+  if (groundY !== null) {
+    const nearGround = Math.abs(y1 - groundY) <= groundTolPx;
+    if (!nearGround) return false;
+  }
+
+  if (st.tLastStrike !== null && (tMs - st.tLastStrike) < minStrikeMs) return false;
+  if (st.lastMaxTime !== null && (tMs - st.lastMaxTime) < Math.max(120, minStrikeMs * 0.5)) return false;
+
+  st.lastMaxTime = tMs;
+  return true;
 }
 
-.tipicon {
-  width: 18px;
-  height: 18px;
-  border-radius: 999px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--text);
-  border: 1px solid var(--line);
-  background: rgba(255,255,255,0.08);
-  cursor: pointer;
-  user-select: none;
+function computeStrideMetrics(side, tMs) {
+  const vMS = getSpeedMS();
+  const st = footState[side];
+
+  let strideTimeMs = null, strideLenM = null, strideFreqHz = null;
+  if (st.tLastStrike !== null) {
+    strideTimeMs = tMs - st.tLastStrike;
+    const strideTimeSec = strideTimeMs / 1000.0;
+    if (strideTimeSec > 0) {
+      strideFreqHz = 1.0 / strideTimeSec;
+      strideLenM = vMS * strideTimeSec;
+    }
+  }
+  st.tLastStrike = tMs;
+
+  return { strideTimeMs, strideLenM, strideFreqHz };
 }
 
-.tiptext {
-  position: absolute;
-  left: 0;
-  top: 26px;
-  z-index: 30;
-  width: min(340px, 72vw);
-  padding: 10px 12px;
-  border-radius: 12px;
-  border: 1px solid var(--line);
-  background: rgba(0,0,0,0.85);
-  color: var(--text);
-  font-size: 12.5px;
-  line-height: 1.35;
-  box-shadow: 0 10px 26px rgba(0,0,0,0.45);
-  opacity: 0;
-  transform: translateY(-6px);
-  pointer-events: none;
-  transition: opacity 0.15s ease, transform 0.15s ease;
+// ✅ NEW: only add a row if step alternates R/L/R/L
+function registerAlternatingStep(side, tMs, strideObj) {
+  // if same side as last added step, ignore (prevents "Right-only" tables)
+  if (lastStepSide !== null && side === lastStepSide) return;
+
+  const vMS = getSpeedMS();
+
+  let stepTimeMs = null;
+  let stepLenM = null;
+
+  if (lastStepTimeMs !== null) {
+    stepTimeMs = tMs - lastStepTimeMs;
+    const stepTimeSec = stepTimeMs / 1000.0;
+    if (stepTimeSec > 0) stepLenM = vMS * stepTimeSec;
+  }
+
+  lastStepSide = side;
+  lastStepTimeMs = tMs;
+
+  stepCount += 1;
+  const label = `${stepCount} – ${side === "R" ? "Right" : "Left"}`;
+
+  addRowToTable({
+    stepLabel: label,
+    stepTimeMs,
+    stepLenM,
+    strideTimeMs: strideObj.strideTimeMs,
+    strideLenM: strideObj.strideLenM,
+    strideFreqHz: strideObj.strideFreqHz
+  });
+
+  lastSideEl.textContent = side === "R" ? "Right" : "Left";
+  if (strideObj.strideFreqHz !== null && isFinite(strideObj.strideFreqHz)) {
+    lastFreqEl.textContent = fmt(strideObj.strideFreqHz, 3);
+  }
+
+  if (stepCount >= 10) {
+    if (usingUpload) {
+      stopAll(true);
+      setStatus("Upload analysis finished (10 steps)");
+    } else {
+      stopAnalysisOnly();
+      setStatus("Analysis finished (10 steps). You can Analyze again.");
+    }
+  }
 }
 
-.tipwrap:hover .tiptext,
-.tipwrap:focus .tiptext,
-.tipwrap:focus-within .tiptext {
-  opacity: 1;
-  transform: translateY(0);
-  pointer-events: auto;
+// ---------------- Drawing ----------------
+function drawResults(results) {
+  updateCanvasSize();
+
+  ctx.save();
+  ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+  ctx.drawImage(results.image, 0, 0, canvasEl.width, canvasEl.height);
+
+  if (results.poseLandmarks) {
+    drawConnectors(ctx, results.poseLandmarks, POSE_CONNECTIONS, { lineWidth: 3 });
+    drawLandmarks(ctx, results.poseLandmarks, { lineWidth: 2, radius: 2 });
+  }
+
+  drawGroundOverlay();
+  ctx.restore();
 }
 
-@media (pointer: coarse) {
-  .tipicon { width: 22px; height: 22px; font-size: 13px; }
+// ---------------- Pose callback ----------------
+async function onPoseResults(results) {
+  if (!runningLoop) return;
+
+  totalFrames += 1;
+
+  if (results.poseLandmarks && results.poseLandmarks.length > 0) {
+    const visThresh = clamp(Number(visThreshInput.value || 0.55), 0, 1);
+    const minStrikeMs = Math.max(120, Number(minStrikeMsInput.value || 300));
+    const smoothN = Math.max(1, Math.min(15, Number(smoothNInput.value || 5)));
+    const groundTolPx = Math.max(5, Math.min(80, Number(groundTolPxInput.value || 18)));
+
+    facingEl.textContent = estimateFacingDirection(results.poseLandmarks);
+
+    updateEstimatedGroundFromLandmarks(results.poseLandmarks, visThresh);
+
+    if (groundCalibrating) {
+      const lh = results.poseLandmarks[IDX.L_HEEL];
+      const rh = results.poseLandmarks[IDX.R_HEEL];
+      const goodL = lh && (lh.visibility ?? 0) >= visThresh;
+      const goodR = rh && (rh.visibility ?? 0) >= visThresh;
+      if (goodL) groundSamples.push(lh.y * canvasEl.height);
+      if (goodR) groundSamples.push(rh.y * canvasEl.height);
+    }
+
+    // basic quality estimate
+    const rOk = (results.poseLandmarks[IDX.R_HEEL]?.visibility ?? 0) >= visThresh &&
+                (results.poseLandmarks[IDX.R_ANKLE]?.visibility ?? 0) >= visThresh;
+    const lOk = (results.poseLandmarks[IDX.L_HEEL]?.visibility ?? 0) >= visThresh &&
+                (results.poseLandmarks[IDX.L_ANKLE]?.visibility ?? 0) >= visThresh;
+    if (rOk && lOk) goodFrames += 1;
+    setStatusQuality();
+
+    drawResults(results);
+
+    if (analyzeState === "analyzing" || usingUpload) {
+      const tMs = getTimeMs();
+
+      const r = getFootY(results.poseLandmarks, "R", visThresh);
+      const l = getFootY(results.poseLandmarks, "L", visThresh);
+
+      if (r.ok && detectStrike("R", tMs, r.y, minStrikeMs, smoothN, groundTolPx)) {
+        const strideObj = computeStrideMetrics("R", tMs);
+        registerAlternatingStep("R", tMs, strideObj);
+      }
+
+      if (l.ok && detectStrike("L", tMs, l.y, minStrikeMs, smoothN, groundTolPx)) {
+        const strideObj = computeStrideMetrics("L", tMs);
+        registerAlternatingStep("L", tMs, strideObj);
+      }
+    }
+
+  } else {
+    setStatusQuality();
+    facingEl.textContent = "—";
+    drawResults(results);
+  }
 }
+
+// ---------------- MediaPipe Pose init ----------------
+async function initPose() {
+  if (pose) return;
+
+  pose = new Pose({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose@${POSE_VERSION}/${file}`
+  });
+
+  pose.setOptions({
+    modelComplexity: 1,
+    smoothLandmarks: true,
+    enableSegmentation: false,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
+  });
+
+  pose.onResults(onPoseResults);
+}
+
+// ---------------- Ground calibration ----------------
+async function calibrateGroundLine() {
+  if (!streamOn || !runningLoop) {
+    setStatus("Start Live Camera first, then set ground line.");
+    return;
+  }
+
+  groundCalibrating = true;
+  groundSamples = [];
+  setStatus("Calibrating ground line… keep feet visible (1 second)");
+  setHUD("CALIBRATING…");
+
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+
+  groundCalibrating = false;
+  setHUD("");
+
+  if (groundSamples.length < 10) {
+    setStatus("Ground calibration failed (feet not visible enough). Try again.");
+    return;
+  }
+
+  const gy = percentile(groundSamples, 90);
+  groundY = gy;
+  groundCalibrated = true;
+
+  setStatus("Ground line set (calibrated).");
+}
+
+// ---------------- Analyze workflow (live) ----------------
+async function sleepWithCountdownHUD(seconds, label) {
+  for (let s = seconds; s >= 1; s--) {
+    setHUD(`${label} ${s}s`);
+    await new Promise((r) => setTimeout(r, 1000));
+    if (analyzeState !== "warmup") break;
+  }
+  setHUD("");
+}
+
+function resetAnalysisMetricsOnly() {
+  footState.R.yHist = [];
+  footState.L.yHist = [];
+  footState.R.ySmHist = [];
+  footState.L.ySmHist = [];
+  footState.R.tLastStrike = null;
+  footState.L.tLastStrike = null;
+  footState.R.lastMaxTime = null;
+  footState.L.lastMaxTime = null;
+
+  // alternation reset
+  lastStepSide = null;
+  lastStepTimeMs = null;
+  stepCount = 0;
+
+  lastSideEl.textContent = "—";
+  lastFreqEl.textContent = "—";
+
+  resetTable();
+}
+
+async function runAnalyzeWorkflow() {
+  if (!streamOn || !runningLoop) {
+    setStatus("Start Live Camera first, then press Analyze.");
+    return;
+  }
+
+  analyzeBtn.disabled = true;
+  setGroundBtn.disabled = true;
+  processUploadBtn.disabled = true;
+
+  analyzeState = "warmup";
+  setStatus("Warm-up: run naturally (10 seconds).");
+  await sleepWithCountdownHUD(10, "WARM-UP");
+
+  analyzeState = "countdown";
+  setStatus("Get ready… analysis begins soon.");
+  for (let i = 5; i >= 1; i--) {
+    setHUD(`ANALYZE IN ${i}`);
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  setHUD("");
+
+  resetAnalysisMetricsOnly();
+  analyzeState = "analyzing";
+  setStatus("Analyzing… capturing 10 alternating steps.");
+  setHUD("ANALYZING…");
+}
+
+function stopAnalysisOnly() {
+  analyzeState = "idle";
+  setHUD("");
+
+  analyzeBtn.disabled = false;
+  setGroundBtn.disabled = false;
+  processUploadBtn.disabled = (videoFileInput.files.length === 0);
+}
+
+// ---------------- Live camera loop ----------------
+async function loopLiveFrames() {
+  if (!runningLoop) return;
+
+  try {
+    lastFrameTimeMs = performance.now();
+    await pose.send({ image: videoEl });
+  } catch (e) {
+    console.error(e);
+    setStatus(`Pose error: ${e?.message || e}`);
+    stopAll(true);
+    return;
+  }
+
+  rafId = requestAnimationFrame(loopLiveFrames);
+}
+
+// ---------------- Upload processing loop ----------------
+function startUploadProcessingLoop() {
+  const hasRVFC = typeof videoEl.requestVideoFrameCallback === "function";
+
+  if (hasRVFC) {
+    const tickRVFC = async (_now, metadata) => {
+      if (!runningLoop) return;
+
+      if (videoEl.ended) {
+        setStatus("Upload finished.");
+        stopAll(true);
+        return;
+      }
+
+      lastFrameTimeMs = metadata.mediaTime * 1000;
+
+      try {
+        await pose.send({ image: videoEl });
+      } catch (e) {
+        console.error(e);
+        setStatus(`Pose error: ${e?.message || e}`);
+        stopAll(true);
+        return;
+      }
+
+      videoEl.requestVideoFrameCallback(tickRVFC);
+    };
+
+    videoEl.requestVideoFrameCallback(tickRVFC);
+    return;
+  }
+
+  const tickRAF = async () => {
+    if (!runningLoop) return;
+
+    if (videoEl.ended) {
+      setStatus("Upload finished.");
+      stopAll(true);
+      return;
+    }
+
+    lastFrameTimeMs = videoEl.currentTime * 1000;
+
+    try {
+      await pose.send({ image: videoEl });
+    } catch (e) {
+      console.error(e);
+      setStatus(`Pose error: ${e?.message || e}`);
+      stopAll(true);
+      return;
+    }
+
+    rafId = requestAnimationFrame(tickRAF);
+  };
+
+  rafId = requestAnimationFrame(tickRAF);
+}
+
+// ---------------- Stop / Reset / Export ----------------
+function stopAll(setStoppedStatus = true) {
+  analyzeState = "idle";
+  usingUpload = false;
+
+  runningLoop = false;
+  streamOn = false;
+
+  stopBtn.disabled = true;
+  startCamBtn.disabled = false;
+
+  analyzeBtn.disabled = true;
+  setGroundBtn.disabled = true;
+
+  processUploadBtn.disabled = (videoFileInput.files.length === 0);
+
+  if (rafId) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+
+  if (stream) {
+    stream.getTracks().forEach(t => t.stop());
+    stream = null;
+  }
+
+  if (uploadedUrl) {
+    URL.revokeObjectURL(uploadedUrl);
+    uploadedUrl = null;
+  }
+
+  videoEl.controls = false;
+
+  setHUD("");
+  if (setStoppedStatus) setStatus("Stopped");
+}
+
+function resetAllState() {
+  groundY = null;
+  groundCalibrated = false;
+  groundCalibrating = false;
+  groundSamples = [];
+
+  goodFrames = 0;
+  totalFrames = 0;
+  qualityEl.textContent = "—";
+  facingEl.textContent = "—";
+  lastSideEl.textContent = "—";
+  lastFreqEl.textContent = "—";
+
+  resetAnalysisMetricsOnly();
+  setHUD("");
+}
+
+// ---------------- Events ----------------
+downloadBtn.addEventListener("click", () => downloadCSV());
+
+resetBtn.addEventListener("click", () => {
+  resetAllState();
+  setStatus("Reset");
+});
+
+stopBtn.addEventListener("click", () => stopAll(true));
+
+videoFileInput.addEventListener("change", () => {
+  processUploadBtn.disabled = (videoFileInput.files.length === 0);
+});
+
+setGroundBtn.addEventListener("click", async () => {
+  await calibrateGroundLine();
+});
+
+analyzeBtn.addEventListener("click", async () => {
+  if (analyzeState !== "idle") return;
+  await runAnalyzeWorkflow();
+});
+
+// ---------------- Start Live Camera ----------------
+startCamBtn.addEventListener("click", async () => {
+  try {
+    await initPose();
+    resetAllState();
+
+    usingUpload = false;
+    setHUD("");
+
+    if (uploadedUrl) {
+      URL.revokeObjectURL(uploadedUrl);
+      uploadedUrl = null;
+    }
+
+    videoEl.srcObject = null;
+    videoEl.src = "";
+    videoEl.muted = true;
+    videoEl.playsInline = true;
+    videoEl.controls = false;
+
+    setStatus("Requesting camera permission…");
+
+    const constraints = {
+      audio: false,
+      video: {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      }
+    };
+
+    stream = await navigator.mediaDevices.getUserMedia(constraints);
+    videoEl.srcObject = stream;
+
+    await videoEl.play();
+
+    streamOn = true;
+    runningLoop = true;
+
+    startCamBtn.disabled = true;
+    stopBtn.disabled = false;
+
+    setGroundBtn.disabled = false;
+    analyzeBtn.disabled = false;
+
+    processUploadBtn.disabled = true;
+
+    setStatus("Live camera running. Set ground line, then Analyze.");
+    rafId = requestAnimationFrame(loopLiveFrames);
+
+  } catch (e) {
+    console.error(e);
+    setStatus(`Camera failed: ${e?.name || ""} ${e?.message || e}`);
+    stopAll(false);
+  }
+});
+
+// ---------------- Process Uploaded Video (stable) ----------------
+processUploadBtn.addEventListener("click", async () => {
+  try {
+    await initPose();
+    resetAllState();
+
+    const file = videoFileInput.files[0];
+    if (!file) {
+      setStatus("Choose a video file first.");
+      return;
+    }
+
+    usingUpload = true;
+    analyzeState = "idle";
+
+    if (stream) {
+      stream.getTracks().forEach(t => t.stop());
+      stream = null;
+    }
+
+    if (uploadedUrl) URL.revokeObjectURL(uploadedUrl);
+    uploadedUrl = URL.createObjectURL(file);
+
+    videoEl.srcObject = null;
+    videoEl.src = uploadedUrl;
+
+    // Keep controls for upload so user can tap play if blocked
+    videoEl.controls = true;
+    videoEl.muted = true;
+    videoEl.playsInline = true;
+    videoEl.currentTime = 0;
+
+    setStatus("Loading uploaded video…");
+
+    startCamBtn.disabled = true;
+    stopBtn.disabled = false;
+
+    setGroundBtn.disabled = true;
+    analyzeBtn.disabled = true;
+
+    // IMPORTANT: wait until video is actually playing
+    try {
+      await ensureVideoReadyAndPlaying();
+    } catch (e) {
+      setStatus(e.message || "Upload playback did not start. Tap Play and try again.");
+      usingUpload = false;
+      startCamBtn.disabled = false;
+      return;
+    }
+
+    setStatus("Processing upload… capturing 10 alternating steps.");
+    setHUD("UPLOADED VIDEO");
+
+    runningLoop = true;
+    streamOn = false;
+
+    startUploadProcessingLoop();
+
+  } catch (e) {
+    console.error(e);
+    setStatus(`Upload failed: ${e?.message || e}`);
+    stopAll(false);
+  }
+});
+
+// ---------------- Initial UI ----------------
+function initUI() {
+  resetAllState();
+
+  startCamBtn.disabled = false;
+  stopBtn.disabled = true;
+
+  setGroundBtn.disabled = true;
+  analyzeBtn.disabled = true;
+
+  processUploadBtn.disabled = true;
+  downloadBtn.disabled = true;
+
+  videoEl.controls = false;
+
+  setStatus("Ready (open via GitHub Pages HTTPS link)");
+}
+
+initUI();
