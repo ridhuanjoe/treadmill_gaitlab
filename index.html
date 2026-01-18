@@ -3,20 +3,16 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Treadmill Gait Lab (Step/Stride)</title>
+  <title>Treadmill Gait Lab</title>
   <link rel="stylesheet" href="style.css" />
 
-  <!-- Pinned MediaPipe versions -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/pose.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1675466124/drawing_utils.js"></script>
 </head>
 <body>
   <header>
     <h1>Treadmill Gait Lab</h1>
-    <p class="sub">
-      Side-view, one runner. Live Camera or Upload video. Measures step/stride time, treadmill-derived lengths, stride frequency.
-    </p>
+    <p class="sub">Live camera or upload video. Step/stride time, treadmill-derived lengths, stride frequency.</p>
   </header>
 
   <main class="grid">
@@ -24,15 +20,7 @@
       <h2>Inputs</h2>
 
       <div class="row">
-        <label for="speed">
-          Treadmill speed
-          <span class="tipwrap" tabindex="0">
-            <span class="tipicon">?</span>
-            <span class="tiptext">
-              Enter treadmill belt speed. Lengths are computed from speed × time (treadmill-derived). Use km/h or m/s.
-            </span>
-          </span>
-        </label>
+        <label for="speed">Treadmill speed</label>
         <input id="speed" type="number" step="0.1" value="8.0" />
         <select id="speedUnit">
           <option value="kmh">km/h</option>
@@ -41,61 +29,25 @@
       </div>
 
       <div class="row">
-        <label for="minStrikeMs">
-          Min time between same-foot strikes (ms)
-          <span class="tipwrap" tabindex="0">
-            <span class="tipicon">?</span>
-            <span class="tiptext">
-              Anti double-count filter. After a strike is detected for the SAME foot, extra same-foot strikes are ignored for this many ms.
-              Typical: 300 (try 220–400).
-            </span>
-          </span>
-        </label>
+        <label for="minStrikeMs">Min time between same-foot strikes (ms)</label>
         <input id="minStrikeMs" type="number" step="10" value="300" />
         <div></div>
       </div>
 
       <div class="row">
-        <label for="smoothN">
-          Smoothing window (frames)
-          <span class="tipwrap" tabindex="0">
-            <span class="tipicon">?</span>
-            <span class="tiptext">
-              Reduces jitter in the foot trajectory. Higher = smoother but slightly delayed strike timing.
-              Typical: 5 frames (try 3–7).
-            </span>
-          </span>
-        </label>
+        <label for="smoothN">Smoothing window (frames)</label>
         <input id="smoothN" type="number" step="1" value="5" min="1" max="15" />
         <div></div>
       </div>
 
       <div class="row">
-        <label for="visThresh">
-          Landmark visibility threshold
-          <span class="tipwrap" tabindex="0">
-            <span class="tipicon">?</span>
-            <span class="tiptext">
-              MediaPipe confidence for each joint. Points below this are ignored.
-              Raise for cleaner data; lower if feet are sometimes blocked. Typical: 0.55.
-            </span>
-          </span>
-        </label>
+        <label for="visThresh">Landmark visibility threshold</label>
         <input id="visThresh" type="number" step="0.05" value="0.55" min="0" max="1" />
         <div></div>
       </div>
 
       <div class="row">
-        <label for="groundTolPx">
-          Ground tolerance (px)
-          <span class="tipwrap" tabindex="0">
-            <span class="tipicon">?</span>
-            <span class="tiptext">
-              A strike is only counted if the foot is close to the ground line within this many pixels.
-              Smaller = stricter; larger = more forgiving. Typical: 15–22 px.
-            </span>
-          </span>
-        </label>
+        <label for="groundTolPx">Ground tolerance (px)</label>
         <input id="groundTolPx" type="number" step="1" value="18" min="5" max="60" />
         <div></div>
       </div>
@@ -108,19 +60,11 @@
 
       <div class="row buttons2">
         <button id="setGroundBtn" disabled>Set Ground Line</button>
-        <button id="analyzeBtn" disabled>Analyze (10s warm-up → 5s countdown → 10 steps)</button>
+        <button id="analyzeBtn" disabled>Analyze</button>
       </div>
 
       <div class="row">
-        <label for="videoFile">
-          Upload recorded video
-          <span class="tipwrap" tabindex="0">
-            <span class="tipicon">?</span>
-            <span class="tiptext">
-              Side-view treadmill clip (10–20s). MP4 works best. If autoplay is blocked, press Play on the video controls.
-            </span>
-          </span>
-        </label>
+        <label for="videoFile">Upload recorded video</label>
         <input id="videoFile" type="file" accept="video/*" />
         <div></div>
       </div>
@@ -134,31 +78,13 @@
       </div>
 
       <div class="row info4">
-        <div>
-          <div class="kpiLabel">Tracking quality</div>
-          <div id="quality" class="kpiValue">—</div>
-        </div>
-        <div>
-          <div class="kpiLabel">Facing</div>
-          <div id="facing" class="kpiValue">—</div>
-        </div>
-        <div>
-          <div class="kpiLabel">Last step side</div>
-          <div id="lastSide" class="kpiValue">—</div>
-        </div>
-        <div>
-          <div class="kpiLabel">Last stride freq (Hz)</div>
-          <div id="lastFreq" class="kpiValue">—</div>
-        </div>
+        <div><div class="kpiLabel">Tracking quality</div><div id="quality" class="kpiValue">—</div></div>
+        <div><div class="kpiLabel">Facing</div><div id="facing" class="kpiValue">—</div></div>
+        <div><div class="kpiLabel">Last step side</div><div id="lastSide" class="kpiValue">—</div></div>
+        <div><div class="kpiLabel">Last stride freq (Hz)</div><div id="lastFreq" class="kpiValue">—</div></div>
       </div>
-
-      <p class="tip">
-        <strong>Setup tips:</strong> Side view, stable camera, hips-to-feet visible. Avoid treadmill rails blocking ankles/heels.
-        Use <strong>Set Ground Line</strong> before analysis for best heel-strike timing.
-      </p>
     </section>
 
-    <!-- BIG Live View -->
     <section class="card wide live">
       <h2>Live View</h2>
       <div class="videoWrap">
@@ -166,19 +92,17 @@
         <canvas id="overlay"></canvas>
         <div id="hud" class="hud"></div>
       </div>
-      <p class="small">Ground line + crosshair help align heel strike/toe-off to the “floor”.</p>
+      <p class="small">Ground line + crosshair helps align heel strike/toe-off to the “floor”.</p>
     </section>
 
     <section class="card wide">
       <div class="tableHeader">
         <h2>Step & Stride Table</h2>
-        <div class="tableBtns">
-          <button id="downloadBtn" disabled>Download CSV</button>
-        </div>
+        <button id="downloadBtn" disabled>Download CSV</button>
       </div>
 
       <div class="tableWrap">
-        <table id="resultsTable">
+        <table>
           <thead>
             <tr>
               <th>Step</th>
@@ -192,14 +116,9 @@
           <tbody id="tbody"></tbody>
         </table>
       </div>
-
       <p class="small">Treadmill assumption: lengths are derived from belt speed × time.</p>
     </section>
   </main>
-
-  <footer>
-    <p class="small">On-device processing (no server). Best in Chrome/Safari.</p>
-  </footer>
 
   <script src="app.js"></script>
 </body>
