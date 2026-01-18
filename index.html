@@ -3,16 +3,20 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Treadmill Gait Lab</title>
+  <title>Treadmill Gait Lab (Step/Stride)</title>
   <link rel="stylesheet" href="style.css" />
 
+  <!-- Pinned MediaPipe versions (stable with locateFile in app.js) -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/pose.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1675466124/drawing_utils.js"></script>
 </head>
 <body>
   <header>
     <h1>Treadmill Gait Lab</h1>
-    <p class="sub">Live camera or upload video. Step/stride time, treadmill-derived lengths, stride frequency.</p>
+    <p class="sub">
+      Side-view, one runner. Live Camera or Upload video. Measures step/stride time, treadmill-derived lengths, stride frequency.
+    </p>
   </header>
 
   <main class="grid">
@@ -60,7 +64,7 @@
 
       <div class="row buttons2">
         <button id="setGroundBtn" disabled>Set Ground Line</button>
-        <button id="analyzeBtn" disabled>Analyze</button>
+        <button id="analyzeBtn" disabled>Analyze (10s warm-up → 5s countdown → 10 steps)</button>
       </div>
 
       <div class="row">
@@ -78,31 +82,52 @@
       </div>
 
       <div class="row info4">
-        <div><div class="kpiLabel">Tracking quality</div><div id="quality" class="kpiValue">—</div></div>
-        <div><div class="kpiLabel">Facing</div><div id="facing" class="kpiValue">—</div></div>
-        <div><div class="kpiLabel">Last step side</div><div id="lastSide" class="kpiValue">—</div></div>
-        <div><div class="kpiLabel">Last stride freq (Hz)</div><div id="lastFreq" class="kpiValue">—</div></div>
+        <div>
+          <div class="kpiLabel">Tracking quality</div>
+          <div id="quality" class="kpiValue">—</div>
+        </div>
+        <div>
+          <div class="kpiLabel">Facing</div>
+          <div id="facing" class="kpiValue">—</div>
+        </div>
+        <div>
+          <div class="kpiLabel">Last step side</div>
+          <div id="lastSide" class="kpiValue">—</div>
+        </div>
+        <div>
+          <div class="kpiLabel">Last stride freq (Hz)</div>
+          <div id="lastFreq" class="kpiValue">—</div>
+        </div>
       </div>
+
+      <p class="tip">
+        <strong>Setup tips:</strong> Side view, stable camera, hips-to-feet visible. Avoid treadmill rails blocking ankles/heels.
+        Use <strong>Set Ground Line</strong> before analysis for best heel-strike timing.
+      </p>
     </section>
 
-    <section class="card wide live">
+    <section class="card">
       <h2>Live View</h2>
       <div class="videoWrap">
         <video id="video" playsinline muted></video>
         <canvas id="overlay"></canvas>
         <div id="hud" class="hud"></div>
       </div>
-      <p class="small">Ground line + crosshair helps align heel strike/toe-off to the “floor”.</p>
+      <p class="small">
+        Ground line + crosshair help you align heel strike/toe-off to the “floor”.
+      </p>
     </section>
 
     <section class="card wide">
       <div class="tableHeader">
         <h2>Step & Stride Table</h2>
-        <button id="downloadBtn" disabled>Download CSV</button>
+        <div class="tableBtns">
+          <button id="downloadBtn" disabled>Download CSV</button>
+        </div>
       </div>
 
       <div class="tableWrap">
-        <table>
+        <table id="resultsTable">
           <thead>
             <tr>
               <th>Step</th>
@@ -116,9 +141,16 @@
           <tbody id="tbody"></tbody>
         </table>
       </div>
-      <p class="small">Treadmill assumption: lengths are derived from belt speed × time.</p>
+
+      <p class="small">
+        Treadmill assumption: Step/stride lengths are derived from belt speed × time.
+      </p>
     </section>
   </main>
+
+  <footer>
+    <p class="small">On-device processing (no server). Best in Chrome/Safari.</p>
+  </footer>
 
   <script src="app.js"></script>
 </body>
