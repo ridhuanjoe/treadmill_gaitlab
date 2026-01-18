@@ -399,13 +399,22 @@ function registerStrike(side, tMs) {
   st.tLastStrike = tMs;
 
   // step (alternating feet only)
-  let stepTimeMs = null, stepLenM = null;
-  if (lastAnyStrike !== null && lastAnyStrike.side !== side) {
-    stepTimeMs = tMs - lastAnyStrike.tMs;
-    const stepTimeSec = stepTimeMs / 1000.0;
-    if (stepTimeSec > 0) stepLenM = vMS * stepTimeSec;
-  }
+    let stepTimeMs = null, stepLenM = null;
 
+// Preferred: compute from alternating strikes (R<->L)
+if (lastAnyStrike !== null && lastAnyStrike.side !== side) {
+  stepTimeMs = tMs - lastAnyStrike.tMs;
+  const stepTimeSec = stepTimeMs / 1000.0;
+  if (stepTimeSec > 0) stepLenM = vMS * stepTimeSec;
+} else {
+  // Fallback: if we don't have an alternating strike yet, approximate using stride time
+  // step_time ≈ stride_time / 2 (steady treadmill running)
+  if (strideTimeMs !== null && strideTimeMs > 0) {
+    stepTimeMs = strideTimeMs / 2;
+    const stepTimeSec = stepTimeMs / 1000.0;
+    stepLenM = vMS * stepTimeSec;
+  }
+}
   lastAnyStrike = { side, tMs };
 
   stepCount += 1;
@@ -924,3 +933,4 @@ function initUI() {
 }
 
 initUI();
+
