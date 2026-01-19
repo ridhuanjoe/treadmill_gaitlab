@@ -24,63 +24,43 @@
       <h2>Inputs</h2>
 
       <div class="row">
-        <label for="speed">
+        <label for="speed" title="Treadmill belt speed. Used to compute step/stride length as speed × time.">
           Treadmill speed
-          <span class="info" tabindex="0" role="button" aria-label="Treadmill speed tooltip"
-            data-tip="Treadmill belt speed. Used to compute step/stride length as speed × time (speed in m/s × time in seconds).">
-            ⓘ
-          </span>
         </label>
         <input id="speed" type="number" step="0.1" value="8.0" />
-        <select id="speedUnit" aria-label="Speed unit">
+        <select id="speedUnit">
           <option value="kmh">km/h</option>
           <option value="ms">m/s</option>
         </select>
       </div>
 
       <div class="row">
-        <label for="minStrikeMs">
+        <label for="minStrikeMs" title="Prevents double-counting: once a foot strike is detected, the same foot cannot trigger again within this time (ms). Default 300 ms.">
           Min time between same-foot strikes (ms)
-          <span class="info" tabindex="0" role="button" aria-label="Min time tooltip"
-            data-tip="Safety filter to prevent double-counting. After a Right strike, ignore another Right strike for this many milliseconds (same for Left). Default 300 ms.">
-            ⓘ
-          </span>
         </label>
         <input id="minStrikeMs" type="number" step="10" value="300" />
         <div></div>
       </div>
 
       <div class="row">
-        <label for="smoothN">
+        <label for="smoothN" title="How many frames are averaged to reduce jitter in foot height. Higher = smoother but more lag. Default 5.">
           Smoothing window (frames)
-          <span class="info" tabindex="0" role="button" aria-label="Smoothing tooltip"
-            data-tip="Averages the last N frames of foot height to reduce jitter. Higher = smoother but slightly more lag. Default 5.">
-            ⓘ
-          </span>
         </label>
         <input id="smoothN" type="number" step="1" value="5" min="1" max="15" />
         <div></div>
       </div>
 
       <div class="row">
-        <label for="visThresh">
+        <label for="visThresh" title="Pose confidence cutoff (0–1). Lower detects more but can be noisier; higher is stricter. Default 0.55.">
           Landmark visibility threshold
-          <span class="info" tabindex="0" role="button" aria-label="Visibility tooltip"
-            data-tip="Pose confidence cutoff (0–1). If landmarks are below this, they may be ignored. Lower = more detections but noisier; higher = stricter. Default 0.55.">
-            ⓘ
-          </span>
         </label>
         <input id="visThresh" type="number" step="0.05" value="0.55" min="0" max="1" />
         <div></div>
       </div>
 
       <div class="row">
-        <label for="groundTolPx">
+        <label for="groundTolPx" title="Foot strike is counted only when the foot is within this many pixels of the ground line. Default 18 px.">
           Ground tolerance (px)
-          <span class="info" tabindex="0" role="button" aria-label="Ground tolerance tooltip"
-            data-tip="When a ground line exists, a foot strike is counted only if the foot is within this many pixels of the ground line. Default 18 px.">
-            ⓘ
-          </span>
         </label>
         <input id="groundTolPx" type="number" step="1" value="18" min="5" max="60" />
         <div></div>
@@ -98,12 +78,8 @@
       </div>
 
       <div class="row">
-        <label for="videoFile">
+        <label for="videoFile" title="Upload a recorded side-view treadmill video (10–20 seconds recommended).">
           Upload recorded video
-          <span class="info" tabindex="0" role="button" aria-label="Upload tooltip"
-            data-tip="Upload a recorded side-view treadmill video (10–20 seconds recommended).">
-            ⓘ
-          </span>
         </label>
         <input id="videoFile" type="file" accept="video/*" />
         <div></div>
@@ -166,48 +142,12 @@
         <table id="resultsTable">
           <thead>
             <tr>
-              <th>
-                Step
-                <span class="info info-th" tabindex="0" role="button" aria-label="Step tooltip"
-                  data-tip="Which foot strike was detected (Right/Left refers to the runner’s anatomical right/left).">
-                  ⓘ
-                </span>
-              </th>
-              <th>
-                Step Time (ms)
-                <span class="info info-th" tabindex="0" role="button" aria-label="Step time tooltip"
-                  data-tip="Time between alternating foot strikes (e.g., Right → Left).">
-                  ⓘ
-                </span>
-              </th>
-              <th>
-                Step Length (m)
-                <span class="info info-th" tabindex="0" role="button" aria-label="Step length tooltip"
-                  data-tip="Treadmill-derived: Step Length = belt speed (m/s) × step time (sec).">
-                  ⓘ
-                </span>
-              </th>
-              <th>
-                Stride Time (ms)
-                <span class="info info-th" tabindex="0" role="button" aria-label="Stride time tooltip"
-                  data-tip="Time between same-foot strikes (e.g., Right → Right).">
-                  ⓘ
-                </span>
-              </th>
-              <th>
-                Stride Length (m)
-                <span class="info info-th" tabindex="0" role="button" aria-label="Stride length tooltip"
-                  data-tip="Treadmill-derived: Stride Length = belt speed (m/s) × stride time (sec).">
-                  ⓘ
-                </span>
-              </th>
-              <th>
-                Stride Frequency (Hz)
-                <span class="info info-th" tabindex="0" role="button" aria-label="Stride frequency tooltip"
-                  data-tip="Stride Frequency = 1 ÷ stride time (sec).">
-                  ⓘ
-                </span>
-              </th>
+              <th>Step</th>
+              <th>Step Time (ms)</th>
+              <th>Step Length (m)</th>
+              <th>Stride Time (ms)</th>
+              <th>Stride Length (m)</th>
+              <th>Stride Frequency (Hz)</th>
             </tr>
           </thead>
           <tbody id="tbody"></tbody>
