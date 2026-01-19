@@ -65,6 +65,26 @@
         <input id="groundTolPx" type="number" step="1" value="18" min="5" max="60" />
         <div></div>
       </div>
+      
+      <div class="row">
+        <label for="targetSteps">
+          Steps to capture
+          <span class="info" tabindex="0" role="button" aria-label="Steps to capture tooltip"
+          data-tip="How many detected steps to record before auto-stopping. Choose 10–30.">
+          ⓘ
+          </span>
+        </label>
+
+        <select id="targetSteps" aria-label="Steps to capture">
+          <option value="10" selected>10 steps</option>
+          <option value="15">15 steps</option>
+          <option value="20">20 steps</option>
+          <option value="25">25 steps</option>
+          <option value="30">30 steps</option>
+        </select>
+
+        <div></div>
+      </div>
 
       <div class="row buttons3">
         <button id="startCamBtn">Start Live Camera</button>
@@ -167,3 +187,4 @@
   <script src="app.js"></script>
 </body>
 </html>
+
