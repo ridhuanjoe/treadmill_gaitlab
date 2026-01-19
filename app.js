@@ -34,6 +34,7 @@ const minStrikeMsInput = document.getElementById("minStrikeMs");
 const smoothNInput = document.getElementById("smoothN");
 const visThreshInput = document.getElementById("visThresh");
 const groundTolPxInput = document.getElementById("groundTolPx");
+const targetStepsSelect = document.getElementById("targetSteps");
 
 const qualityEl = document.getElementById("quality");
 const facingEl = document.getElementById("facing");
@@ -113,6 +114,15 @@ function getSpeedMS() {
   const unit = speedUnitSelect.value;
   if (!isFinite(v) || v <= 0) return 0;
   return unit === "kmh" ? (v / 3.6) : v;
+}
+function getTargetSteps() {
+  const v = Number(targetStepsSelect?.value || 10);
+  return Math.max(10, Math.min(30, v));
+}
+
+function updateAnalyzeButtonLabel() {
+  const n = getTargetSteps();
+  analyzeBtn.textContent = `Analyze (10s warm-up → 5s countdown → ${n} steps)`;
 }
 
 function fmt(x, digits = 3) {
@@ -412,14 +422,15 @@ function registerStrike(side, tMs) {
   lastSideEl.textContent = label;
   if (strideFreqHz !== null && isFinite(strideFreqHz)) lastFreqEl.textContent = fmt(strideFreqHz, 3);
 
-  if (stepCount >= 10) {
-    if (usingUpload) {
-      stopAll(true);
-      setStatus("Upload analysis finished (10 steps)");
-    } else {
-      stopAnalysisOnly();
-      setStatus("Analysis finished (10 steps). You can Analyze again.");
-    }
+  const target = getTargetSteps();
+
+if (stepCount >= target) {
+  if (usingUpload) {
+    stopAll(true);
+    setStatus(`Upload analysis finished (${target} steps)`);
+  } else {
+    stopAnalysisOnly();
+    setStatus(`Analysis finished (${target} steps). You can Analyze again.`);
   }
 }
 
@@ -567,7 +578,7 @@ async function runAnalyzeWorkflow() {
 
   resetAnalysisMetricsOnly();
   analyzeState = "analyzing";
-  setStatus("Analyzing… capturing 10 steps.");
+  setStatus(`Analyzing… capturing ${getTargetSteps()} steps.`);
   setHUD("ANALYZING…");
 }
 
@@ -755,6 +766,11 @@ stopBtn.addEventListener("click", () => stopAll(true));
 videoFileInput.addEventListener("change", () => {
   processUploadBtn.disabled = (videoFileInput.files.length === 0);
 });
+if (targetStepsSelect) {
+  targetStepsSelect.addEventListener("change", () => {
+    updateAnalyzeButtonLabel();
+  });
+}
 
 setGroundBtn.addEventListener("click", async () => {
   await calibrateGroundLine();
@@ -858,7 +874,7 @@ processUploadBtn.addEventListener("click", async () => {
     setGroundBtn.disabled = true;
     analyzeBtn.disabled = true;
 
-    setStatus("Processing upload… capturing 10 steps.");
+    setStatus(`Processing upload… capturing ${getTargetSteps()} steps.`);
     setHUD("UPLOADED VIDEO");
 
     runningLoop = true;
@@ -897,6 +913,7 @@ function initUI() {
   processUploadBtn.disabled = true;
   downloadBtn.disabled = true;
 
+  updateAnalyzeButtonLabel();
   setStatus("Ready (open via GitHub Pages HTTPS link)");
 
   // Ensure table header tooltips show reliably (native browser tooltip)
@@ -904,3 +921,4 @@ function initUI() {
 }
 
 initUI();
+
