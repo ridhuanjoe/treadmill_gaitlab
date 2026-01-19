@@ -874,17 +874,6 @@ processUploadBtn.addEventListener("click", async () => {
 });
 
 // ---------------- Initial UI ----------------
-
-// ---------------- Native (browser) tooltips for table headers (never clipped) ----------------
-function applyNativeHeaderTitles() {
-  const icons = document.querySelectorAll("#resultsTable thead .info[data-tip]");
-  icons.forEach((el) => {
-    const tip = el.getAttribute("data-tip") || "";
-    if (tip && !el.getAttribute("title")) el.setAttribute("title", tip);
-  });
-}
-
-
 function initUI() {
   resetAllState();
 
@@ -898,9 +887,6 @@ function initUI() {
   downloadBtn.disabled = true;
 
   setStatus("Ready (open via GitHub Pages HTTPS link)");
-
-  // Ensure table header tooltips show reliably (native browser tooltip)
-  applyNativeHeaderTitles();
 }
 
 initUI();
