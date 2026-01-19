@@ -874,6 +874,17 @@ processUploadBtn.addEventListener("click", async () => {
 });
 
 // ---------------- Initial UI ----------------
+
+// ---------------- Native (browser) tooltips for table headers (never clipped) ----------------
+function applyNativeHeaderTitles() {
+  const icons = document.querySelectorAll("#resultsTable thead .info[data-tip]");
+  icons.forEach((el) => {
+    const tip = el.getAttribute("data-tip") || "";
+    if (tip && !el.getAttribute("title")) el.setAttribute("title", tip);
+  });
+}
+
+
 function initUI() {
   resetAllState();
 
@@ -887,122 +898,9 @@ function initUI() {
   downloadBtn.disabled = true;
 
   setStatus("Ready (open via GitHub Pages HTTPS link)");
+
+  // Ensure table header tooltips show reliably (native browser tooltip)
+  applyNativeHeaderTitles();
 }
-
-
-// ---------------- Table header tooltips (not clipped by scroll container) ----------------
-let _tipBubble = null;
-let _tipArrow = null;
-let _tipHideTimer = null;
-
-function initTableHeaderTooltips() {
-  const icons = document.querySelectorAll("#resultsTable thead .info[data-tip]");
-  if (!icons.length) return;
-
-  // Create shared tooltip elements once
-  _tipBubble = document.createElement("div");
-  _tipBubble.className = "tooltip-bubble";
-  _tipBubble.setAttribute("role", "tooltip");
-
-  _tipArrow = document.createElement("div");
-  _tipArrow.className = "tooltip-arrow";
-
-  document.body.appendChild(_tipBubble);
-  document.body.appendChild(_tipArrow);
-
-  const show = (el) => {
-    const text = el.getAttribute("data-tip");
-    if (!text) return;
-
-    if (_tipHideTimer) {
-      clearTimeout(_tipHideTimer);
-      _tipHideTimer = null;
-    }
-
-    _tipBubble.textContent = text;
-
-    _tipBubble.classList.remove("below", "show");
-    _tipArrow.classList.remove("below", "show");
-
-    _tipBubble.style.display = "block";
-    _tipArrow.style.display = "block";
-
-    const iconRect = el.getBoundingClientRect();
-
-    // Measure bubble
-    _tipBubble.style.left = "0px";
-    _tipBubble.style.top = "0px";
-    _tipBubble.style.opacity = "0";
-    const bubbleRect = _tipBubble.getBoundingClientRect();
-
-    let x = iconRect.left + iconRect.width / 2;
-    const halfW = bubbleRect.width / 2;
-    x = Math.max(10 + halfW, Math.min(window.innerWidth - 10 - halfW, x));
-
-    const margin = 10;
-    const placeAbove = iconRect.top > bubbleRect.height + margin + 10;
-
-    if (placeAbove) {
-      const top = iconRect.top - 10; // anchor point above icon
-      _tipBubble.style.left = `${x}px`;
-      _tipBubble.style.top = `${top}px`;
-      _tipBubble.classList.remove("below");
-
-      _tipArrow.style.left = `${x}px`;
-      _tipArrow.style.top = `${iconRect.top - 12}px`;
-      _tipArrow.classList.remove("below");
-    } else {
-      const top = iconRect.bottom + 10;
-      _tipBubble.style.left = `${x}px`;
-      _tipBubble.style.top = `${top}px`;
-      _tipBubble.classList.add("below");
-
-      _tipArrow.style.left = `${x}px`;
-      _tipArrow.style.top = `${iconRect.bottom + 2}px`;
-      _tipArrow.classList.add("below");
-    }
-
-    requestAnimationFrame(() => {
-      _tipBubble.classList.add("show");
-      _tipArrow.classList.add("show");
-      _tipBubble.style.opacity = "";
-    });
-  };
-
-  const hide = () => {
-    if (!_tipBubble) return;
-    _tipBubble.classList.remove("show");
-    _tipArrow.classList.remove("show");
-    _tipHideTimer = setTimeout(() => {
-      if (_tipBubble) _tipBubble.style.display = "none";
-      if (_tipArrow) _tipArrow.style.display = "none";
-      _tipHideTimer = null;
-    }, 120);
-  };
-
-  icons.forEach((el) => {
-    el.addEventListener("mouseenter", () => show(el));
-    el.addEventListener("mouseleave", hide);
-    el.addEventListener("focus", () => show(el));
-    el.addEventListener("blur", hide);
-
-    // Mobile: tap toggles
-    el.addEventListener("touchstart", (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      const visible = _tipBubble && _tipBubble.classList.contains("show");
-      if (visible) hide();
-      else show(el);
-    }, { passive: false });
-  });
-
-  document.addEventListener("touchstart", hide, { passive: true });
-  document.addEventListener("click", hide);
-  window.addEventListener("scroll", hide, { passive: true });
-  window.addEventListener("resize", hide);
-}
-
-
-initTableHeaderTooltips();
 
 initUI();
