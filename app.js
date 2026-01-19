@@ -4,10 +4,11 @@
 // 2) Ground line + crosshair + ground calibration button
 // 3) Analyze workflow: 10s warm-up -> 5s countdown -> analyze 10 steps (camera stays on)
 //
-// Amendments in THIS version:
-// - Step length now computed reliably in upload + live using per-foot last strike times
-// - Step label is "Right" / "Left" (as requested)
-// - Everything else unchanged
+// Fixes in THIS version:
+// - Tooltips handled in HTML/CSS (ⓘ icons) for all key variables + table headers.
+// - Rectify 'only one leg detected' issue by using adaptive per-foot visibility thresholds
+//   (far leg often has lower landmark visibility depending on facing/occlusion).
+// - Keeps Right/Left as anatomical right/left from MediaPipe.
 
 const POSE_VERSION = "0.5.1675469404";
 
@@ -76,12 +77,16 @@ const footState = {
 // For reliable STEP TIME: last accepted strike per foot
 let lastStrikeTime = { R: null, L: null };
 
-let lastAnyStrike = null; // {side, tMs} (used only as a global refractory reference)
+let lastAnyStrike = null; // {side, tMs} (global refractory)
 let stepCount = 0;
 
 // Tracking quality
 let goodFrames = 0;
 let totalFrames = 0;
+
+// Per-foot visibility history (adaptive thresholding)
+const visHist = { R: [], L: [] };
+const VIS_HIST_MAX = 60;
 
 // MediaPipe landmark indices
 const IDX = {
@@ -176,6 +181,33 @@ function percentile(arr, p) {
   const a = arr.slice().sort((x, y) => x - y);
   const idx = Math.floor((p / 100) * (a.length - 1));
   return a[idx];
+}
+
+function avg(arr) {
+  if (!arr.length) return 0;
+  return arr.reduce((s, x) => s + x, 0) / arr.length;
+}
+
+function pushVis(side, v) {
+  const a = visHist[side];
+  a.push(v);
+  if (a.length > VIS_HIST_MAX) a.shift();
+}
+
+function adaptiveVisThresh(side, baseThresh) {
+  // If the far leg is consistently low visibility, relax its threshold slightly
+  const a = visHist[side];
+  const aAvg = avg(a);
+  const relaxed = Math.max(0.25, baseThresh - 0.20);
+
+  // Not enough data yet? Be slightly relaxed to avoid "only one foot detected"
+  if (a.length < 12) return Math.max(0.25, baseThresh - 0.15);
+
+  // If average visibility is low relative to the user's chosen threshold -> relax
+  if (aAvg < baseThresh * 0.75) return relaxed;
+
+  // Otherwise keep strict
+  return baseThresh;
 }
 
 // ---------------- Table + Export ----------------
@@ -307,7 +339,7 @@ function updateEstimatedGroundFromLandmarks(landmarks, visThresh) {
 }
 
 // ---------------- Strike Detection ----------------
-function getFootY(landmarks, side, visThresh) {
+function getFootY(landmarks, side, baseVisThresh) {
   const aIdx = side === "R" ? IDX.R_ANKLE : IDX.L_ANKLE;
   const hIdx = side === "R" ? IDX.R_HEEL : IDX.L_HEEL;
 
@@ -317,9 +349,23 @@ function getFootY(landmarks, side, visThresh) {
 
   const aVis = (a.visibility ?? 0);
   const hVis = (h.visibility ?? 0);
-  if (aVis < visThresh || hVis < visThresh) return { ok: false, y: null };
 
-  const yPix = ((a.y + h.y) / 2) * canvasEl.height;
+  // Track vis history (average ankle+heel)
+  pushVis(side, (aVis + hVis) / 2);
+
+  // Adaptive threshold prevents the far leg from being dropped entirely
+  const thresh = adaptiveVisThresh(side, baseVisThresh);
+
+  // Accept if either landmark is reasonably visible (not BOTH)
+  const ok = (aVis >= thresh) || (hVis >= thresh);
+  if (!ok) return { ok: false, y: null };
+
+  // Weighted blend for y (more stable)
+  const wA = Math.max(0.05, aVis);
+  const wH = Math.max(0.05, hVis);
+  const yNorm = (a.y * wA + h.y * wH) / (wA + wH);
+  const yPix = yNorm * canvasEl.height;
+
   return { ok: true, y: yPix };
 }
 
@@ -340,28 +386,32 @@ function detectStrike(side, tMs, yPix, minStrikeMs, smoothN, groundTolPx) {
   const y1 = st.ySmHist[n - 2];
   const y0 = st.ySmHist[n - 1];
 
+  // local MAX in y => foot lowest point (image coords)
   const isLocalMax = (y1 > y2 && y1 > y0);
   if (!isLocalMax) return false;
 
+  // velocity sign change around peak
   const dyPrev = y1 - y2;
   const dyNext = y0 - y1;
   const hasSignChange = (dyPrev > 0 && dyNext < 0);
   if (!hasSignChange) return false;
 
+  // near-ground gate (only if ground is known)
   if (groundY !== null) {
     const nearGround = Math.abs(y1 - groundY) <= groundTolPx;
     if (!nearGround) return false;
   }
 
+  // same-foot refractory
   if (st.tLastStrike !== null && (tMs - st.tLastStrike) < minStrikeMs) return false;
 
+  // prevent multiple maxima hits
   if (st.lastMaxTime !== null && (tMs - st.lastMaxTime) < Math.max(120, minStrikeMs * 0.5)) return false;
 
   st.lastMaxTime = tMs;
   return true;
 }
 
-// ---------------- IMPORTANT: UPDATED registerStrike (step time/length fix + Right/Left labels) ----------------
 function registerStrike(side, tMs) {
   const vMS = getSpeedMS();
   const st = footState[side];
@@ -391,10 +441,7 @@ function registerStrike(side, tMs) {
     if (stepTimeSec > 0) stepLenM = vMS * stepTimeSec;
   }
 
-  // update last strike time for this foot
   lastStrikeTime[side] = tMs;
-
-  // keep a reference time for global refractory only
   lastAnyStrike = { side, tMs };
 
   stepCount += 1;
@@ -450,28 +497,31 @@ async function onPoseResults(results) {
   if (results.poseLandmarks && results.poseLandmarks.length > 0) {
     lastLandmarks = results.poseLandmarks;
 
-    const visThresh = clamp(Number(visThreshInput.value || 0.55), 0, 1);
+    const baseVisThresh = clamp(Number(visThreshInput.value || 0.55), 0, 1);
     const minStrikeMs = Math.max(120, Number(minStrikeMsInput.value || 300));
     const smoothN = Math.max(1, Math.min(15, Number(smoothNInput.value || 5)));
     const groundTolPx = Math.max(5, Math.min(80, Number(groundTolPxInput.value || 18)));
 
     facingEl.textContent = estimateFacingDirection(results.poseLandmarks);
 
-    updateEstimatedGroundFromLandmarks(results.poseLandmarks, visThresh);
+    // Use strict threshold for ground estimation (keeps line stable)
+    updateEstimatedGroundFromLandmarks(results.poseLandmarks, baseVisThresh);
 
+    // ground calibration sampling
     if (groundCalibrating) {
       const lh = results.poseLandmarks[IDX.L_HEEL];
       const rh = results.poseLandmarks[IDX.R_HEEL];
-      const goodL = lh && (lh.visibility ?? 0) >= visThresh;
-      const goodR = rh && (rh.visibility ?? 0) >= visThresh;
+      const goodL = lh && (lh.visibility ?? 0) >= baseVisThresh;
+      const goodR = rh && (rh.visibility ?? 0) >= baseVisThresh;
       if (goodL) groundSamples.push(lh.y * canvasEl.height);
       if (goodR) groundSamples.push(rh.y * canvasEl.height);
     }
 
-    const rOk = (results.poseLandmarks[IDX.R_HEEL]?.visibility ?? 0) >= visThresh &&
-                (results.poseLandmarks[IDX.R_ANKLE]?.visibility ?? 0) >= visThresh;
-    const lOk = (results.poseLandmarks[IDX.L_HEEL]?.visibility ?? 0) >= visThresh &&
-                (results.poseLandmarks[IDX.L_ANKLE]?.visibility ?? 0) >= visThresh;
+    // quality = both feet visible (strict, informational)
+    const rOk = (results.poseLandmarks[IDX.R_HEEL]?.visibility ?? 0) >= baseVisThresh &&
+                (results.poseLandmarks[IDX.R_ANKLE]?.visibility ?? 0) >= baseVisThresh;
+    const lOk = (results.poseLandmarks[IDX.L_HEEL]?.visibility ?? 0) >= baseVisThresh &&
+                (results.poseLandmarks[IDX.L_ANKLE]?.visibility ?? 0) >= baseVisThresh;
     if (rOk && lOk) goodFrames += 1;
     setStatusQuality();
 
@@ -479,8 +529,8 @@ async function onPoseResults(results) {
 
     if (analyzeState === "analyzing" || usingUpload) {
       const tMs = getTimeMs();
-      const r = getFootY(results.poseLandmarks, "R", visThresh);
-      const l = getFootY(results.poseLandmarks, "L", visThresh);
+      const r = getFootY(results.poseLandmarks, "R", baseVisThresh);
+      const l = getFootY(results.poseLandmarks, "L", baseVisThresh);
 
       if (r.ok && detectStrike("R", tMs, r.y, minStrikeMs, smoothN, groundTolPx)) registerStrike("R", tMs);
       if (l.ok && detectStrike("L", tMs, l.y, minStrikeMs, smoothN, groundTolPx)) registerStrike("L", tMs);
@@ -591,9 +641,13 @@ function resetAnalysisMetricsOnly() {
   footState.L.lastMaxTime = null;
 
   lastAnyStrike = null;
-  lastStrikeTime = { R: null, L: null }; // important for step length
+  lastStrikeTime = { R: null, L: null };
 
   stepCount = 0;
+
+  // reset per-foot visibility history
+  visHist.R = [];
+  visHist.L = [];
 
   lastSideEl.textContent = "—";
   lastFreqEl.textContent = "—";
@@ -786,6 +840,7 @@ startCamBtn.addEventListener("click", async () => {
 
     setStatus("Requesting camera permission…");
 
+    // prefer rear camera on phones
     const constraints = {
       audio: false,
       video: {
@@ -836,6 +891,7 @@ processUploadBtn.addEventListener("click", async () => {
     usingUpload = true;
     analyzeState = "idle";
 
+    // stop camera if any
     if (stream) {
       stream.getTracks().forEach(t => t.stop());
       stream = null;
