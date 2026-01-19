@@ -55,13 +55,7 @@ h2 { margin: 0 0 12px; font-size: 16px; }
   margin-bottom: 10px;
 }
 
-.row label {
-  color: var(--muted);
-  font-size: 13px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
+.row label { color: var(--muted); font-size: 13px; }
 
 .row input, .row select {
   width: 100%;
@@ -176,7 +170,6 @@ thead th {
   text-align: left;
   font-size: 13px;
   color: var(--muted);
-  white-space: nowrap;
 }
 
 tbody td {
@@ -185,36 +178,24 @@ tbody td {
   font-size: 13px;
 }
 
-/* -------- Tooltip (desktop hover + keyboard focus; on mobile tap the ⓘ) -------- */
-.info {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: rgba(255,255,255,0.06);
-  color: var(--text);
-  font-size: 12px;
-  line-height: 1;
-  cursor: help;
-  user-select: none;
-  position: relative;
+/* Table header tooltips use JS so they are not clipped by the scroll container */
+#resultsTable thead .info::after,
+#resultsTable thead .info::before {
+  display: none !important;
 }
 
-.info:focus {
-  outline: 2px solid rgba(232,236,255,0.45);
-  outline-offset: 2px;
+/* Fixed tooltip layer (used only for table header ⓘ icons) */
+.tooltip-layer {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 9999;
+  pointer-events: none;
 }
 
-.info::after {
-  content: attr(data-tip);
-  position: absolute;
-  left: 50%;
-  bottom: 130%;
-  transform: translateX(-50%) translateY(6px);
-  width: min(320px, 80vw);
+.tooltip-bubble {
+  position: fixed;
+  max-width: min(360px, 86vw);
   padding: 10px 12px;
   border-radius: 12px;
   border: 1px solid var(--line);
@@ -224,34 +205,39 @@ tbody td {
   line-height: 1.25;
   box-shadow: 0 10px 28px rgba(0,0,0,0.45);
   opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.15s ease, transform 0.15s ease;
-  z-index: 50;
+  transform: translate(-50%, -100%) translateY(6px);
+  transition: opacity 0.12s ease, transform 0.12s ease;
   white-space: normal;
+  display: none;
 }
 
-.info::before {
-  content: "";
-  position: absolute;
-  left: 50%;
-  bottom: 122%;
-  transform: translateX(-50%);
+.tooltip-bubble.show {
+  opacity: 1;
+  transform: translate(-50%, -100%) translateY(0);
+}
+
+.tooltip-arrow {
+  position: fixed;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  transition: opacity 0.12s ease;
   border: 7px solid transparent;
   border-top-color: rgba(10,12,18,0.98);
-  opacity: 0;
-  transition: opacity 0.15s ease;
-  z-index: 49;
+  display: none;
 }
 
-.info:hover::after,
-.info:focus::after {
-  opacity: 1;
-  transform: translateX(-50%) translateY(0);
-}
-
-.info:hover::before,
-.info:focus::before {
+.tooltip-arrow.show {
   opacity: 1;
 }
 
-.info-th { margin-left: 6px; vertical-align: middle; }
+.tooltip-bubble.below {
+  transform: translate(-50%, 0) translateY(-6px);
+}
+.tooltip-bubble.below.show {
+  transform: translate(-50%, 0) translateY(0);
+}
+.tooltip-arrow.below {
+  border-top-color: transparent;
+  border-bottom-color: rgba(10,12,18,0.98);
+}
